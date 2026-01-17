@@ -1,0 +1,12 @@
+node_modules
+dist
+.npm
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+*.log
+tmp
+*.swp
+.DS_Store
+
