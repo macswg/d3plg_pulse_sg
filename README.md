@@ -1,18 +1,76 @@
-# Vue 3 + Vite
+# Pulse Plugin for Disguise Designer
 
-This template should help get you started developing with Vue 3 in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+A real-time monitoring and control plugin for [Disguise Designer (d3)](https://www.disguise.one/) media server software. Pulse provides operators with live system metrics, alert notifications, and basic timeline control capabilities during live productions.
 
-Learn more about IDE Support for Vue in the [Vue Docs Scaling up Guide](https://vuejs.org/guide/scaling-up/tooling.html#ide-support).
+## Overview
 
-## Docker development workflow
+Pulse is designed for live event operators who need to monitor system health while running shows in Disguise Designer. The plugin connects to Designer's live update system to provide real-time feedback on critical performance metrics.
 
-1. Install Docker Desktop and make sure the Docker daemon is running.
-2. From the repo root, start the dev container:
+### Key Features
+
+- **Real-Time Playhead Display** - Monitor the current playhead position from Designer's transport manager
+- **System Metrics Monitoring** - Track CPU, GPU, memory usage, frame rate, and disk I/O with visual sparkline charts
+- **Configurable Alerts** - Set warning and critical thresholds for each metric with visual indicators
+- **Timeline Control** - Execute Python scripts in Designer (e.g., add text layers to the timeline)
+- **Live Connection Status** - Visual overlay showing connection state to the Designer instance
+
+### Technology Stack
+
+- **Frontend**: Vue 3 with Composition API
+- **Build Tool**: Vite
+- **Charts**: Chart.js with vue-chartjs
+- **Designer Integration**: 
+  - `@disguise-one/vue-liveupdate` for real-time data subscriptions
+  - `@disguise-one/designer-pythonapi` for Python script execution
+
+## Getting Started
+
+### Prerequisites
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
+- A running Disguise Designer instance (for live connection features)
+
+### Installation
+
+1. Clone the repository
+2. Start the development container:
+   ```sh
+   docker compose up
+   ```
+3. Access the plugin at http://localhost:5173
+
+### Connecting to Designer
+
+The plugin automatically connects to Designer using the hostname from the URL. You can also specify the director endpoint explicitly:
+
+```
+http://localhost:5173?director=192.168.1.100:80
+```
+
+## Project Structure
+
+```
+src/
+├── App.vue                      # Main application component
+├── components/
+│   ├── MetricCard.vue           # Metric display with sparkline chart
+│   ├── PlayheadDisplay.vue      # Real-time playhead position
+│   └── TextLayerControl.vue     # Python script execution interface
+├── stores/
+│   └── metrics.js               # Reactive metrics store with alert system
+├── hello_world.py               # Example Python script for Designer
+└── d3.pyi                       # Python type stubs for Designer API
+```
+
+## Docker Development Workflow
+
+1. Start the dev container:
    ```sh
    docker compose up
    ```
    The Vite dev server is exposed on http://localhost:5173. The working tree is bind-mounted so any edits on your host are immediately reflected in the container. `node_modules` lives in a named Docker volume so dependency installs stay fast between runs.
-3. To run arbitrary commands inside the container, use:
+
+2. To run arbitrary commands inside the container, use:
    ```sh
    docker compose exec dev <command>
    ```
@@ -68,3 +126,28 @@ To ensure your IDE recognizes the stub file:
 - Make sure `src/` is included in your Python path/workspace
 - If using VS Code, the Python extension should automatically detect `.pyi` files in your workspace
 - If using PyCharm, it will automatically use stub files in your project directory
+
+## Metrics and Alerting
+
+The metrics store (`src/stores/metrics.js`) provides a reactive system for monitoring performance:
+
+### Tracked Metrics
+| Metric | Unit | Default Warning | Default Critical |
+|--------|------|-----------------|------------------|
+| CPU Load | % | 80% | 90% |
+| GPU Load | % | 80% | 90% |
+| Memory Usage | MB | 4000 MB | 8000 MB |
+| Frame Rate | FPS | < 50 | < 30 |
+| Disk Read | MB/s | - | - |
+| Disk Write | MB/s | - | - |
+
+### Alert Configuration
+
+Each metric can be configured with:
+- **Warning threshold** - Triggers an amber visual indicator
+- **Critical threshold** - Triggers a red pulsing indicator
+- **Comparison mode** - `greater` (alert when above) or `less` (alert when below, used for FPS)
+
+## License
+
+This plugin is intended for use with Disguise Designer. See the [Disguise Developer Portal](https://developer.disguise.one/) for more information on plugin development.

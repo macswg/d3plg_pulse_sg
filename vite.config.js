@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { designerPythonLoader } from '@disguise-one/designer-pythonapi/vite-loader'
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, copyFileSync } from 'node:fs'
 import path from 'node:path'
 
 const BUILD_TARGET_FILE = process.env.BUILD_TARGET_FILE ?? '.build-target'
@@ -42,10 +42,45 @@ function resolveBuildOutputDir() {
 const buildOutDir = resolveBuildOutputDir()
 const isDocker = process.env.DOCKER === 'true'
 
+// Custom plugin to copy d3plugin.json after build
+function copyPluginAssets() {
+  return {
+    name: 'copy-plugin-assets',
+    closeBundle() {
+      // Copy d3plugin.json to build output
+      const srcPlugin = path.resolve(process.cwd(), 'public/d3plugin.json')
+      const destPlugin = path.resolve(buildOutDir, 'd3plugin.json')
+      
+      if (existsSync(srcPlugin)) {
+        try {
+          copyFileSync(srcPlugin, destPlugin)
+          console.log('[copy-plugin-assets] Copied d3plugin.json to', destPlugin)
+        } catch (err) {
+          console.warn('[copy-plugin-assets] Failed to copy d3plugin.json:', err)
+        }
+      }
+      
+      // Copy icon.svg to build output
+      const srcIcon = path.resolve(process.cwd(), 'public/icon.svg')
+      const destIcon = path.resolve(buildOutDir, 'icon.svg')
+      
+      if (existsSync(srcIcon)) {
+        try {
+          copyFileSync(srcIcon, destIcon)
+          console.log('[copy-plugin-assets] Copied icon.svg to', destIcon)
+        } catch (err) {
+          console.warn('[copy-plugin-assets] Failed to copy icon.svg:', err)
+        }
+      }
+    }
+  }
+}
+
 export default defineConfig({
   plugins: [
     vue(),
-    designerPythonLoader()
+    designerPythonLoader(),
+    copyPluginAssets()
   ],
   server: {
     port: 5173,

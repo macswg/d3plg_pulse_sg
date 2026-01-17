@@ -1,0 +1,5 @@
+{
+  "name": "MyPulsePlugin",
+  "requiresSession": true,
+  "isDisguise": true
+}
