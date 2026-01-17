@@ -174,7 +174,14 @@ const alertCount = computed(() => store.alertCount.value)
 const isConnected = computed(() => store.isConnected.value)
 
 // Subscribe to playhead via Live Update
-const { player_tRender } = liveUpdate.autoSubscribe('transportManager:default', ['object.player.tRender'])
+// Using subscribe() instead of autoSubscribe() so we can freeze/thaw based on tab
+const playheadMonitor = liveUpdate.subscribe(
+  'transportManager:default',
+  { tRender: 'object.player.tRender' }
+)
+
+// Expose playhead value for template (computed to handle reactivity)
+const player_tRender = computed(() => playheadMonitor.tRender?.value)
 
 // Subscribe to monitoring graphs via MonitoringManager subsystem
 // Using findLocalMonitor to get local machine metrics
@@ -214,6 +221,42 @@ const memoryMonitor = liveUpdate.subscribe(
   { value: 'object.seriesAverage("Usage (MB)", 1)' }
 )
 
+// Disk metrics - only subscribed when Advanced tab is active
+// Monitor: "Disk", Series: "Read (MB/s)" and "Write (MB/s)"
+const diskReadMonitor = liveUpdate.subscribe(
+  'subsystem:MonitoringManager.findLocalMonitor("Disk")',
+  { value: 'object.seriesAverage("Read (MB/s)", 1)' }
+)
+
+const diskWriteMonitor = liveUpdate.subscribe(
+  'subsystem:MonitoringManager.findLocalMonitor("Disk")',
+  { value: 'object.seriesAverage("Write (MB/s)", 1)' }
+)
+
+// Freeze Advanced tab subscriptions initially (will thaw when Advanced tab is active)
+// Using the freeze/thaw pattern from vue-liveupdate for performance optimization
+// This includes: disk read, disk write, and playhead position
+diskReadMonitor.value?.freeze?.()
+diskWriteMonitor.value?.freeze?.()
+playheadMonitor.tRender?.freeze?.()
+
+// Watch for tab changes to freeze/thaw Advanced tab subscriptions
+watch(activeTab, (newTab, oldTab) => {
+  if (newTab === 'advanced') {
+    // Thaw (resume) subscriptions when entering Advanced tab
+    diskReadMonitor.value?.thaw?.()
+    diskWriteMonitor.value?.thaw?.()
+    playheadMonitor.tRender?.thaw?.()
+    console.log('Advanced tab subscriptions activated (disk + playhead)')
+  } else if (oldTab === 'advanced') {
+    // Freeze (pause) subscriptions when leaving Advanced tab
+    diskReadMonitor.value?.freeze?.()
+    diskWriteMonitor.value?.freeze?.()
+    playheadMonitor.tRender?.freeze?.()
+    console.log('Advanced tab subscriptions paused (disk + playhead)')
+  }
+}, { immediate: true })
+
 // Debug: Log monitor subscription values to console
 watch([fpsMonitor.value, cpuMonitor.value, gpuMonitor.value, memoryMonitor.value], ([fps, cpu, gpu, mem]) => {
   console.log('Monitor values:', { fps, cpu, gpu, memory: mem })
@@ -245,10 +288,23 @@ watch(() => memoryMonitor.value?.value, (val) => {
   }
 }, { deep: true })
 
+// Watch disk metrics (only updates when subscriptions are active/thawed)
+watch(() => diskReadMonitor.value?.value, (val) => {
+  if (val !== undefined && val !== null) {
+    store.updateMetric('diskRead', val)
+  }
+}, { deep: true })
+
+watch(() => diskWriteMonitor.value?.value, (val) => {
+  if (val !== undefined && val !== null) {
+    store.updateMetric('diskWrite', val)
+  }
+}, { deep: true })
+
 // Poll interval reference for cleanup
 let healthPollInterval = null
 
-// Fetch machine health metrics from REST API
+// Fetch machine health metrics from REST API (for connection status)
 async function fetchHealthMetrics() {
   try {
     const response = await fetch(`${apiBaseUrl}/api/session/status/health`)
@@ -259,38 +315,8 @@ async function fetchHealthMetrics() {
     const data = await response.json()
     store.setConnected(true)
     
-    // Process health data for all machines in the session
-    if (data.result && Array.isArray(data.result)) {
-      let totalFPS = 0
-      let droppedFrames = 0
-      let missedFrames = 0
-      let machineCount = 0
-      
-      for (const machineHealth of data.result) {
-        if (machineHealth.status) {
-          // Get FPS from health endpoint (this works reliably)
-          if (machineHealth.status.averageFPS !== undefined) {
-            totalFPS += machineHealth.status.averageFPS
-            machineCount++
-          }
-          if (machineHealth.status.videoDroppedFrames !== undefined) {
-            droppedFrames += machineHealth.status.videoDroppedFrames
-          }
-          if (machineHealth.status.videoMissedFrames !== undefined) {
-            missedFrames += machineHealth.status.videoMissedFrames
-          }
-        }
-      }
-      
-      // Update FPS from health endpoint (average across machines)
-      if (machineCount > 0) {
-        store.updateMetric('fps', totalFPS / machineCount)
-      }
-      
-      // Use dropped/missed frames for disk activity indicators
-      store.updateMetric('diskRead', droppedFrames)
-      store.updateMetric('diskWrite', missedFrames)
-    }
+    // Note: FPS, CPU, GPU, Memory, and Disk metrics now come from Live Update subscriptions
+    // This health endpoint is primarily used to check connection status
   } catch (error) {
     console.warn('Failed to fetch health metrics:', error.message)
     store.setConnected(false)
