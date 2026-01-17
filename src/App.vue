@@ -121,7 +121,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useLiveUpdate, LiveUpdateOverlay } from '@disguise-one/vue-liveupdate'
 import MetricCard from './components/MetricCard.vue'
 import AlertManager from './components/AlertManager.vue'
@@ -129,10 +129,13 @@ import { useMetricsStore } from './stores/metrics'
 
 // Extract the director endpoint from the URL query parameters
 const urlParams = new URLSearchParams(window.location.search)
-const { hostname } = window.location
+const { hostname, protocol } = window.location
 const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1'
 const defaultDirector = isLocalhost ? 'localhost:80' : `${hostname}:80`
 const directorEndpoint = urlParams.get('director') || defaultDirector
+
+// Build the REST API base URL
+const apiBaseUrl = `${protocol}//${directorEndpoint}`
 
 // Initialize live update
 const liveUpdate = useLiveUpdate(directorEndpoint)
@@ -170,60 +173,146 @@ const alertConfigs = computed(() => store.alertConfigs.value)
 const alertCount = computed(() => store.alertCount.value)
 const isConnected = computed(() => store.isConnected.value)
 
-// Subscribe to live machine metrics
-const {
-  machine_cpu_load,
-  machine_gpu_load,
-  process_memory_usage,
-  performance_fps_actual,
-  machine_disk_read,
-  machine_disk_write
-} = liveUpdate.autoSubscribe('machine:default', [
-  'object.machine.cpu.load',
-  'object.machine.gpu.load',
-  'object.process.memory.usage',
-  'object.performance.fps.actual',
-  'object.machine.disk.read',
-  'object.machine.disk.write'
-])
-
-// Subscribe to playhead
+// Subscribe to playhead via Live Update
 const { player_tRender } = liveUpdate.autoSubscribe('transportManager:default', ['object.player.tRender'])
 
-// Watch for metric updates and push to store
-watch(machine_cpu_load, (val) => {
-  if (val !== undefined) store.updateMetric('cpuLoad', val)
-})
+// Subscribe to monitoring graphs via MonitoringManager subsystem
+// Using findLocalMonitor to get local machine metrics
+// The seriesAverage("<series>", 1) method returns the latest value from the specified series
+// See: https://developer.disguise.one/api/session/liveupdate/
+//
+// Monitor names and series discovered from reference Pulse plugin:
+// - Machine monitor: "CPU Time", "GPU Time" series
+// - fps monitor: "Actual" series
+// - ProcessMemory monitor: "Usage (MB)" series
+//
+// IMPORTANT: Using subscribe() instead of autoSubscribe() because the property path
+// contains special characters (parentheses, quotes). subscribe() allows us to specify
+// a custom local name for the property.
 
-watch(machine_gpu_load, (val) => {
-  if (val !== undefined) store.updateMetric('gpuLoad', val)
-})
+// FPS graph - monitor: "fps", series: "Actual"
+const fpsMonitor = liveUpdate.subscribe(
+  'subsystem:MonitoringManager.findLocalMonitor("fps")',
+  { value: 'object.seriesAverage("Actual", 1)' }
+)
 
-watch(process_memory_usage, (val) => {
-  if (val !== undefined) store.updateMetric('memoryUsage', val)
-})
+// CPU Load graph - monitor: "Machine", series: "CPU Time"
+const cpuMonitor = liveUpdate.subscribe(
+  'subsystem:MonitoringManager.findLocalMonitor("Machine")',
+  { value: 'object.seriesAverage("CPU Time", 1)' }
+)
 
-watch(performance_fps_actual, (val) => {
-  if (val !== undefined) store.updateMetric('fps', val)
-})
+// GPU Load graph - monitor: "Machine", series: "GPU Time"
+const gpuMonitor = liveUpdate.subscribe(
+  'subsystem:MonitoringManager.findLocalMonitor("Machine")',
+  { value: 'object.seriesAverage("GPU Time", 1)' }
+)
 
-watch(machine_disk_read, (val) => {
-  if (val !== undefined) store.updateMetric('diskRead', val)
-})
+// Process Memory graph - monitor: "ProcessMemory", series: "Usage (MB)"
+const memoryMonitor = liveUpdate.subscribe(
+  'subsystem:MonitoringManager.findLocalMonitor("ProcessMemory")',
+  { value: 'object.seriesAverage("Usage (MB)", 1)' }
+)
 
-watch(machine_disk_write, (val) => {
-  if (val !== undefined) store.updateMetric('diskWrite', val)
-})
+// Debug: Log monitor subscription values to console
+watch([fpsMonitor.value, cpuMonitor.value, gpuMonitor.value, memoryMonitor.value], ([fps, cpu, gpu, mem]) => {
+  console.log('Monitor values:', { fps, cpu, gpu, memory: mem })
+}, { immediate: true })
 
-// Update connection status
-onMounted(() => {
-  // Check connection status periodically
-  const checkConnection = () => {
-    const connected = machine_cpu_load.value !== undefined
-    store.setConnected(connected)
+// Watch for Live Update metric changes and push to store
+// With subscribe(), we used { value: ... } so the property is accessed as monitor.value
+watch(() => fpsMonitor.value?.value, (val) => {
+  if (val !== undefined && val !== null) {
+    store.updateMetric('fps', val)
   }
+}, { deep: true })
+
+watch(() => cpuMonitor.value?.value, (val) => {
+  if (val !== undefined && val !== null) {
+    store.updateMetric('cpuLoad', val)
+  }
+}, { deep: true })
+
+watch(() => gpuMonitor.value?.value, (val) => {
+  if (val !== undefined && val !== null) {
+    store.updateMetric('gpuLoad', val)
+  }
+}, { deep: true })
+
+watch(() => memoryMonitor.value?.value, (val) => {
+  if (val !== undefined && val !== null) {
+    store.updateMetric('memoryUsage', val)
+  }
+}, { deep: true })
+
+// Poll interval reference for cleanup
+let healthPollInterval = null
+
+// Fetch machine health metrics from REST API
+async function fetchHealthMetrics() {
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/session/status/health`)
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`)
+    }
+    
+    const data = await response.json()
+    store.setConnected(true)
+    
+    // Process health data for all machines in the session
+    if (data.result && Array.isArray(data.result)) {
+      let totalFPS = 0
+      let droppedFrames = 0
+      let missedFrames = 0
+      let machineCount = 0
+      
+      for (const machineHealth of data.result) {
+        if (machineHealth.status) {
+          // Get FPS from health endpoint (this works reliably)
+          if (machineHealth.status.averageFPS !== undefined) {
+            totalFPS += machineHealth.status.averageFPS
+            machineCount++
+          }
+          if (machineHealth.status.videoDroppedFrames !== undefined) {
+            droppedFrames += machineHealth.status.videoDroppedFrames
+          }
+          if (machineHealth.status.videoMissedFrames !== undefined) {
+            missedFrames += machineHealth.status.videoMissedFrames
+          }
+        }
+      }
+      
+      // Update FPS from health endpoint (average across machines)
+      if (machineCount > 0) {
+        store.updateMetric('fps', totalFPS / machineCount)
+      }
+      
+      // Use dropped/missed frames for disk activity indicators
+      store.updateMetric('diskRead', droppedFrames)
+      store.updateMetric('diskWrite', missedFrames)
+    }
+  } catch (error) {
+    console.warn('Failed to fetch health metrics:', error.message)
+    store.setConnected(false)
+  }
+}
+
+// Start polling for health metrics
+onMounted(() => {
+  // Initial fetch
+  fetchHealthMetrics()
   
-  setInterval(checkConnection, 1000)
+  // Poll health metrics every 1 second
+  healthPollInterval = setInterval(() => {
+    fetchHealthMetrics()
+  }, 1000)
+})
+
+// Cleanup on unmount
+onUnmounted(() => {
+  if (healthPollInterval) {
+    clearInterval(healthPollInterval)
+  }
 })
 
 // Actions

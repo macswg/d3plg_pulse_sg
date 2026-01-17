@@ -5,23 +5,34 @@ import { existsSync, mkdirSync, readFileSync, copyFileSync } from 'node:fs'
 import path from 'node:path'
 
 const BUILD_TARGET_FILE = process.env.BUILD_TARGET_FILE ?? '.build-target'
+const BUILD_TARGET_LOCAL_FILE = '.build-target.local'
 const FALLBACK_OUT_DIR = 'dist'
 
 function resolveBuildOutputDir() {
   const configuredPath = (() => {
-    const candidate = path.resolve(process.cwd(), BUILD_TARGET_FILE)
-    if (!existsSync(candidate)) {
-      return null
+    // Check for local override first, then fall back to default
+    const candidates = [
+      path.resolve(process.cwd(), BUILD_TARGET_LOCAL_FILE),
+      path.resolve(process.cwd(), BUILD_TARGET_FILE)
+    ]
+
+    for (const candidate of candidates) {
+      if (!existsSync(candidate)) {
+        continue
+      }
+
+      const contents = readFileSync(candidate, 'utf-8').trim()
+      if (!contents) {
+        continue
+      }
+
+      console.log(`[vite.config.js] Using build target from: ${candidate}`)
+      return path.isAbsolute(contents)
+        ? contents
+        : path.resolve(process.cwd(), contents)
     }
 
-    const contents = readFileSync(candidate, 'utf-8').trim()
-    if (!contents) {
-      return null
-    }
-
-    return path.isAbsolute(contents)
-      ? contents
-      : path.resolve(process.cwd(), contents)
+    return null
   })()
 
   const outDir = configuredPath ?? path.resolve(process.cwd(), FALLBACK_OUT_DIR)

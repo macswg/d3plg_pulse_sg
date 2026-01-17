@@ -46,6 +46,9 @@ ehthumbs.db
 # Docker
 docker-compose.override.yml
 
+# Local build target override
+.build-target.local
+
 # Python
 __pycache__/
 *.py[cod]
