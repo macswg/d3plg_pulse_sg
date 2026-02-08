@@ -1,7 +1,17 @@
 <template>
   <div class="metric-card" :class="alertClass" @click="$emit('click')">
     <div class="metric-header">
-      <h3 class="metric-title">{{ title }}</h3>
+      <div class="metric-header-top">
+        <div class="metric-header-row">
+          <h3 class="metric-title">{{ title }}</h3>
+          <div v-if="!valueBelowTitle" class="metric-value" :style="{ color: valueColor }">
+            {{ formattedValue }} <span class="metric-unit">{{ unit }}</span>
+          </div>
+        </div>
+        <div v-if="valueBelowTitle" class="metric-value-below" :style="{ color: valueColor }">
+          {{ formattedValue }} <span class="metric-unit">{{ unit }}</span>
+        </div>
+      </div>
       <button class="settings-btn" @click.stop="$emit('configure')" title="Configure alerts">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="3"/>
@@ -10,12 +20,10 @@
       </button>
     </div>
     
-    <div class="metric-value" :style="{ color: valueColor }">
-      {{ formattedValue }} <span class="metric-unit">{{ unit }}</span>
-    </div>
-    
-    <div class="metric-chart">
-      <Line v-if="chartData" :data="chartData" :options="chartOptions" />
+    <div class="metric-body">
+      <div class="metric-chart">
+        <Line v-if="chartData" :data="chartData" :options="chartOptions" />
+      </div>
     </div>
   </div>
 </template>
@@ -38,6 +46,7 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler)
 const props = defineProps({
   title: { type: String, required: true },
   value: { type: Number, default: 0 },
+  valueMax: { type: Number, default: null },
   unit: { type: String, default: '' },
   decimals: { type: Number, default: 1 },
   history: { type: Array, default: () => [] },
@@ -47,9 +56,17 @@ const props = defineProps({
 
 defineEmits(['click', 'configure'])
 
-// Format the current value
+// When valueMax is set (e.g. Memory Usage), show value below the title
+const valueBelowTitle = computed(() => props.valueMax != null && props.valueMax > 0)
+
+// Format the current value (or "used / max" when valueMax is set)
 const formattedValue = computed(() => {
-  return props.value.toFixed(props.decimals)
+  const used = props.value.toFixed(props.decimals)
+  if (props.valueMax != null && props.valueMax > 0) {
+    const max = Number(props.valueMax).toFixed(props.decimals)
+    return `${used} / ${max}`
+  }
+  return used
 })
 
 // Determine value color based on thresholds
@@ -88,13 +105,14 @@ const alertClass = computed(() => {
 // Chart data
 const chartData = computed(() => {
   if (!props.history || props.history.length === 0) return null
-  
+  const values = props.history.map(h => h.value)
+  const color = valueColor.value
   return {
-    labels: props.history.map((_, i) => i),
+    labels: values.map((_, i) => i),
     datasets: [{
-      data: props.history.map(h => h.value),
-      borderColor: valueColor.value,
-      backgroundColor: `${valueColor.value}20`,
+      data: values,
+      borderColor: color,
+      backgroundColor: `${color}20`,
       fill: true,
       tension: 0.4,
       pointRadius: 0,
@@ -103,17 +121,18 @@ const chartData = computed(() => {
   }
 })
 
-// Chart options - minimal sparkline style
+// Chart options - minimal sparkline style (low DPR and no animation to reduce CPU)
 const chartOptions = {
   responsive: true,
   maintainAspectRatio: false,
+  devicePixelRatio: 1,
   plugins: {
     legend: { display: false },
     tooltip: { enabled: false }
   },
   scales: {
     x: { display: false },
-    y: { 
+    y: {
       display: false,
       beginAtZero: false
     }
@@ -121,15 +140,16 @@ const chartOptions = {
   elements: {
     line: { borderWidth: 2 }
   },
-  animation: false
+  animation: false,
+  transitions: false
 }
 </script>
 
 <style scoped>
 .metric-card {
   background: #1E1E1E;
-  border-radius: 8px;
-  padding: 16px;
+  border-radius: 6px;
+  padding: 10px 12px 0 12px;
   cursor: pointer;
   transition: all 0.2s ease;
   border: 1px solid #333;
@@ -137,7 +157,7 @@ const chartOptions = {
 
 .metric-card:hover {
   background: #252525;
-  transform: translateY(-2px);
+  transform: translateY(-1px);
 }
 
 .metric-card.alert-warning {
@@ -160,14 +180,35 @@ const chartOptions = {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
+}
+
+.metric-header-top {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.metric-header-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.metric-value-below {
+  font-size: 20px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .metric-title {
-  font-size: 14px;
-  font-weight: 500;
+  font-size: 16px;
+  font-weight: 600;
   color: #AAA;
   margin: 0;
+  flex-shrink: 0;
 }
 
 .settings-btn {
@@ -175,7 +216,7 @@ const chartOptions = {
   border: none;
   color: #666;
   cursor: pointer;
-  padding: 4px;
+  padding: 2px;
   border-radius: 4px;
   transition: color 0.2s;
 }
@@ -184,19 +225,27 @@ const chartOptions = {
   color: #FF6DF0;
 }
 
+.metric-body {
+  min-height: 0;
+  margin-bottom: -4px;
+}
+
 .metric-value {
-  font-size: 32px;
-  font-weight: 700;
-  margin-bottom: 12px;
+  font-size: 20px;
+  font-weight: 600;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .metric-unit {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 400;
   opacity: 0.7;
 }
 
 .metric-chart {
-  height: 60px;
+  flex: 1;
+  min-width: 0;
+  height: 44px;
 }
 </style>

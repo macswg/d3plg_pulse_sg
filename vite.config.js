@@ -6,15 +6,26 @@ import path from 'node:path'
 
 const BUILD_TARGET_FILE = process.env.BUILD_TARGET_FILE ?? '.build-target'
 const BUILD_TARGET_LOCAL_FILE = '.build-target.local'
+const BUILD_TARGET_SERVER_FILE = '.build-target.server'
 const FALLBACK_OUT_DIR = 'dist'
 
 function resolveBuildOutputDir() {
   const configuredPath = (() => {
-    // Check for local override first, then fall back to default
-    const candidates = [
-      path.resolve(process.cwd(), BUILD_TARGET_LOCAL_FILE),
-      path.resolve(process.cwd(), BUILD_TARGET_FILE)
-    ]
+    // BUILD_TARGET=server → use .build-target.server (for building to a server path)
+    // Otherwise → .build-target.local then .build-target (skip .local in Docker to avoid using a host path)
+    const useServer = process.env.BUILD_TARGET === 'server'
+    const isDocker = process.env.DOCKER === 'true'
+    const candidates = useServer
+      ? [
+          path.resolve(process.cwd(), BUILD_TARGET_SERVER_FILE),
+          path.resolve(process.cwd(), BUILD_TARGET_FILE)
+        ]
+      : isDocker
+        ? [path.resolve(process.cwd(), BUILD_TARGET_FILE)]
+        : [
+            path.resolve(process.cwd(), BUILD_TARGET_LOCAL_FILE),
+            path.resolve(process.cwd(), BUILD_TARGET_FILE)
+          ]
 
     for (const candidate of candidates) {
       if (!existsSync(candidate)) {

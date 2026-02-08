@@ -4,7 +4,7 @@
     <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
       <div class="sidebar-header">
         <img src="/icon.svg" alt="Logo" class="logo" />
-        <span v-if="!sidebarCollapsed" class="app-title">Pulse Monitor</span>
+        <span v-if="!sidebarCollapsed" class="app-title">Pulse SG</span>
       </div>
       
       <nav class="nav-tabs">
@@ -72,9 +72,10 @@
               <MetricCard
                 title="Memory Usage"
                 :value="machines[machineId]?.metrics?.memoryUsage ?? 0"
+                :value-max="machines[machineId]?.memoryMax ?? 0"
                 unit="MB"
                 :decimals="0"
-                :history="machines[machineId]?.history?.memoryUsage ?? []"
+                :history="[]"
                 :thresholds="{ warning: 4000, critical: 8000 }"
                 :alertConfig="alertConfigs.memoryUsage"
                 @configure="openAlertConfig('memoryUsage')"
@@ -93,14 +94,9 @@
         </template>
       </div>
 
-      <!-- Advanced Tab: one section per machine + playhead -->
+      <!-- Advanced Tab: one section per machine -->
       <div v-if="activeTab === 'advanced'" class="tab-content">
         <h1>Advanced Metrics</h1>
-        <!-- Playhead (session-wide) -->
-        <div class="playhead-section">
-          <h2>Playhead Position</h2>
-          <div class="playhead-value">{{ playheadTRender.toFixed(2) }}s</div>
-        </div>
         <div v-if="machineIds.length === 0" class="loading-state">Loading session...</div>
         <template v-else>
           <section
@@ -138,10 +134,45 @@
       <div v-if="activeTab === 'alerts'" class="tab-content">
         <AlertManager @view-metric="viewMetric" />
       </div>
+
+      <!-- Settings Tab: API config -->
+      <div v-if="activeTab === 'settings'" class="tab-content">
+        <h1>API &amp; Update Config</h1>
+        <div class="settings-section">
+          <div class="settings-field">
+            <label for="api-host">API host</label>
+            <input id="api-host" v-model.trim="config.apiHost" type="text" placeholder="e.g. localhost or 10.0.0.1" />
+          </div>
+          <div class="settings-field">
+            <label for="api-port">API port</label>
+            <input id="api-port" v-model.number="config.apiPort" type="number" min="1" max="65535" placeholder="80" />
+          </div>
+          <div class="settings-field">
+            <label for="update-rate">Update rate (ms)</label>
+            <input id="update-rate" v-model.number="config.updateRateMs" type="number" min="0" max="5000" placeholder="10" />
+            <span class="settings-hint">0 = no throttling; 1–5000 = min interval (ms) between updates</span>
+          </div>
+          <div class="settings-actions">
+            <button type="button" class="btn-primary" @click="saveConfig">Save</button>
+            <button type="button" class="btn-ghost" @click="resetConfig">Reset to defaults</button>
+          </div>
+          <p v-if="configSaved" class="config-saved">Config saved. REST API will use the new host/port; refresh the page to reconnect Live Update to a new host.</p>
+        </div>
+      </div>
     </main>
 
     <!-- Connection Overlay -->
     <LiveUpdateOverlay :liveUpdate="liveUpdate" />
+
+    <!-- Per-machine Live Update connections for remote machines (actors/understudies). Director uses the single connection above. -->
+    <MachineLiveUpdate
+      v-for="id in remoteMachineIds"
+      :key="id"
+      :machine-id="id"
+      :machine="machines[id]"
+      :director-endpoint="directorEndpoint"
+      :update-rate-ms="config.updateRateMs > 0 ? config.updateRateMs : 500"
+    />
   </div>
 </template>
 
@@ -150,35 +181,47 @@ import { ref, computed, watch, onMounted, onUnmounted, reactive } from 'vue'
 import { useLiveUpdate, LiveUpdateOverlay } from '@disguise-one/vue-liveupdate'
 import MetricCard from './components/MetricCard.vue'
 import AlertManager from './components/AlertManager.vue'
+import MachineLiveUpdate from './components/MachineLiveUpdate.vue'
 import { useMetricsStore } from './stores/metrics'
 
-// Extract the director endpoint for Live Update and REST API
-// When running in Disguise Designer the plugin may be loaded from file:// (built output),
-// so we must not rely on window.location.protocol or hostname for the director.
+// API config: load from localStorage or derive from URL/env
 const urlParams = new URLSearchParams(window.location.search)
 const { hostname, protocol } = window.location
 
-// Director: prefer query param (Designer injects this), then sensible defaults
-let directorEndpoint = urlParams.get('director') || null
-if (!directorEndpoint) {
-  // file:// or empty hostname => same machine as Designer => localhost
-  if (protocol === 'file:' || !hostname) {
-    directorEndpoint = 'localhost:80'
-  } else {
-    directorEndpoint = hostname === 'localhost' || hostname === '127.0.0.1'
-      ? 'localhost:80'
-      : `${hostname}:80`
+function getDefaultEndpoint() {
+  let ep = urlParams.get('director') || null
+  if (!ep) {
+    const fromEnv = (import.meta.env.VITE_DIRECTOR ?? '').trim()
+    if (fromEnv) ep = fromEnv.replace(/^https?:\/\//i, '').trim()
+    else {
+      if (protocol === 'file:' || !hostname) ep = 'localhost:80'
+      else ep = hostname === 'localhost' || hostname === '127.0.0.1' ? 'localhost:80' : `${hostname}:80`
+    }
+  }
+  return ep.replace(/^https?:\/\//i, '').trim()
+}
+
+function loadConfig() {
+  const defaultEp = getDefaultEndpoint()
+  const [defaultHost, defaultPort] = defaultEp.includes(':') ? defaultEp.split(':') : [defaultEp, 80]
+  try {
+    const raw = localStorage.getItem('pulse_sg_api_config')
+    const parsed = raw ? JSON.parse(raw) : null
+    const apiHost = (parsed?.apiHost ?? defaultHost).toString().trim() || defaultHost
+    const apiPort = Math.min(65535, Math.max(1, Number(parsed?.apiPort) || Number(defaultPort) || 80))
+    const updateRateMs = Math.min(5000, Math.max(0, Number(parsed?.updateRateMs) ?? 10))
+    return { apiHost, apiPort, updateRateMs }
+  } catch {
+    return { apiHost: defaultHost, apiPort: Number(defaultPort) || 80, updateRateMs: 10 }
   }
 }
 
-// Strip any protocol the param might contain (e.g. "http://localhost:80" -> "localhost:80")
-directorEndpoint = directorEndpoint.replace(/^https?:\/\//i, '').trim()
+const config = reactive(loadConfig())
+const directorEndpoint = computed(() => `${config.apiHost}:${config.apiPort}`)
+const apiBaseUrl = computed(() => `http://${config.apiHost}:${config.apiPort}`)
 
-// REST API base URL: always use http when talking to the director (never file:)
-const apiBaseUrl = `http://${directorEndpoint}`
-
-// Initialize live update (uses ws:// with this host:port)
-const liveUpdate = useLiveUpdate(directorEndpoint)
+// Live Update uses config endpoint (refresh page after changing host/port to apply)
+const liveUpdate = useLiveUpdate(`${config.apiHost}:${config.apiPort}`)
 
 // Initialize metrics store
 const store = useMetricsStore()
@@ -186,6 +229,29 @@ const store = useMetricsStore()
 // UI State
 const activeTab = ref('overview')
 const sidebarCollapsed = ref(false)
+const configSaved = ref(false)
+
+function saveConfig() {
+  const port = Math.min(65535, Math.max(1, Number(config.apiPort) || 80))
+  const updateRateMs = Math.min(5000, Math.max(0, Number(config.updateRateMs) ?? 10))
+  config.apiPort = port
+  config.updateRateMs = updateRateMs
+  localStorage.setItem('pulse_sg_api_config', JSON.stringify({ apiHost: config.apiHost, apiPort: config.apiPort, updateRateMs: config.updateRateMs }))
+  store.setUpdateRate(config.updateRateMs)
+  stopIntervals()
+  startIntervals()
+  configSaved.value = true
+  setTimeout(() => { configSaved.value = false }, 3000)
+}
+
+function resetConfig() {
+  const defaultEp = getDefaultEndpoint()
+  const [h, p] = defaultEp.includes(':') ? defaultEp.split(':') : [defaultEp, 80]
+  config.apiHost = h
+  config.apiPort = Number(p) || 80
+  config.updateRateMs = 10
+  configSaved.value = false
+}
 
 // Navigation tabs
 const tabs = [
@@ -203,36 +269,32 @@ const tabs = [
     id: 'alerts', 
     label: 'Alerts',
     icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>'
+  },
+  { 
+    id: 'settings', 
+    label: 'Settings',
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>'
   }
 ]
 
 // Computed properties from store (unwrap refs for template)
 const machineIds = computed(() => store.machineIds.value)
 const machines = computed(() => store.machines.value)
+const remoteMachineIds = computed(() => (store.machineIds.value || []).filter(id => store.machines.value[id] && !store.machines.value[id].isLocal))
 const alertConfigs = computed(() => store.alertConfigs.value)
 const alertCount = computed(() => store.alertCount.value)
 const isConnected = computed(() => store.isConnected.value)
-const playheadTRender = computed(() => store.playheadTRender.value ?? 0)
-
-// Session-wide playhead (Advanced tab)
-const playheadMonitor = liveUpdate.subscribe(
-  'transportManager:default',
-  { tRender: 'object.player.tRender' }
-)
 
 // Per-machine subscription refs (Overview: fps, cpu, gpu, memory; Advanced: diskRead, diskWrite)
 const overviewSubscriptions = reactive({})
 const advancedSubscriptions = reactive({})
 
-function objectPath(machine, monitorName) {
-  if (machine.isLocal) {
-    return `subsystem:MonitoringManager.findLocalMonitor("${monitorName}")`
-  }
-  const host = (machine.hostname || 'localhost').toString().toLowerCase()
-  return `subsystem:MonitoringManager.findRemoteMonitor("${host}", "${monitorName}")`
+// When machines are set, create Live Update subscriptions only for the director (local) machine.
+// Remote machines (actors/understudies) use MachineLiveUpdate: one WebSocket per machine with findLocalMonitor (like the working Pulse plugin).
+function objectPathLocal(monitorName) {
+  return `subsystem:MonitoringManager.findLocalMonitor("${monitorName}")`
 }
 
-// When machines are set, create Live Update subscriptions per machine
 watch(
   () => store.machineIds.value,
   (ids) => {
@@ -240,21 +302,22 @@ watch(
     for (const machineId of ids) {
       if (overviewSubscriptions[machineId]) continue
       const machine = store.machines.value[machineId]
-      if (!machine) continue
+      if (!machine || !machine.isLocal) continue
 
-      const obj = (name) => objectPath(machine, name)
       overviewSubscriptions[machineId] = {
-        fps: liveUpdate.subscribe(obj('fps'), { value: 'object.seriesAverage("Actual", 1)' }),
-        cpuLoad: liveUpdate.subscribe(obj('Machine'), { value: 'object.seriesAverage("CPU Time", 1)' }),
-        gpuLoad: liveUpdate.subscribe(obj('Machine'), { value: 'object.seriesAverage("GPU Time", 1)' }),
-        memoryUsage: liveUpdate.subscribe(obj('ProcessMemory'), { value: 'object.seriesAverage("Usage (MB)", 1)' })
+        fps: liveUpdate.subscribe(objectPathLocal('fps'), { value: 'object.seriesAverage("Actual", 1)' }),
+        cpuLoad: liveUpdate.subscribe(objectPathLocal('Machine'), { value: 'object.seriesAverage("CPU Time", 1)' }),
+        gpuLoad: liveUpdate.subscribe(objectPathLocal('Machine'), { value: 'object.seriesAverage("GPU Time", 1)' }),
+        memoryUsage: liveUpdate.subscribe(objectPathLocal('ProcessMemory'), {
+          value: 'object.seriesAverage("Usage (MB)", 1)',
+          memoryMax: 'object.seriesAverage("Physical Memory (MB)", 1)'
+        })
       }
       advancedSubscriptions[machineId] = {
-        diskRead: liveUpdate.subscribe(obj('Disk'), { value: 'object.seriesAverage("Read (MB/s)", 1)' }),
-        diskWrite: liveUpdate.subscribe(obj('Disk'), { value: 'object.seriesAverage("Write (MB/s)", 1)' })
+        diskRead: liveUpdate.subscribe(objectPathLocal('Disk'), { value: 'object.seriesAverage("Read (MB/s)", 1)' }),
+        diskWrite: liveUpdate.subscribe(objectPathLocal('Disk'), { value: 'object.seriesAverage("Write (MB/s)", 1)' })
       }
 
-      // Watchers: push subscription values to store (ref may be populated async)
       const ov = overviewSubscriptions[machineId]
       const pushOv = (ref, key) => watch(() => ref?.value, (val) => {
         const v = typeof val === 'number' ? val : val?.value
@@ -264,6 +327,10 @@ watch(
       pushOv(ov.cpuLoad, 'cpuLoad')
       pushOv(ov.gpuLoad, 'gpuLoad')
       pushOv(ov.memoryUsage, 'memoryUsage')
+      watch(ov.memoryUsage.memoryMax, (v) => {
+        const n = typeof v === 'number' ? v : v?.value
+        if (typeof n === 'number' && n > 0) store.setMemoryMax(machineId, n)
+      })
       const adv = advancedSubscriptions[machineId]
       pushOv(adv.diskRead, 'diskRead')
       pushOv(adv.diskWrite, 'diskWrite')
@@ -272,26 +339,33 @@ watch(
   { immediate: true, deep: true }
 )
 
-// Playhead: update store and freeze when not on Advanced
-watch(() => playheadMonitor.tRender?.value, (v) => {
-  if (v != null) store.setPlayheadTRender(v)
-}, { deep: true })
-playheadMonitor.tRender?.freeze?.()
-
-// Freeze/thaw Advanced tab subscriptions (disk per machine + playhead)
+// Freeze/thaw tab subscriptions: Overview (fps, cpu, gpu, mem); Advanced (disk only)
 watch(activeTab, (newTab, oldTab) => {
+  if (newTab === 'overview') {
+    Object.values(overviewSubscriptions).forEach(s => {
+      s?.fps?.thaw?.()
+      s?.cpuLoad?.thaw?.()
+      s?.gpuLoad?.thaw?.()
+      s?.memoryUsage?.thaw?.()
+    })
+  } else if (oldTab === 'overview') {
+    Object.values(overviewSubscriptions).forEach(s => {
+      s?.fps?.freeze?.()
+      s?.cpuLoad?.freeze?.()
+      s?.gpuLoad?.freeze?.()
+      s?.memoryUsage?.freeze?.()
+    })
+  }
   if (newTab === 'advanced') {
     Object.values(advancedSubscriptions).forEach(s => {
       s?.diskRead?.thaw?.()
       s?.diskWrite?.thaw?.()
     })
-    playheadMonitor.tRender?.thaw?.()
   } else if (oldTab === 'advanced') {
     Object.values(advancedSubscriptions).forEach(s => {
       s?.diskRead?.freeze?.()
       s?.diskWrite?.freeze?.()
     })
-    playheadMonitor.tRender?.freeze?.()
   }
 }, { immediate: true })
 
@@ -304,32 +378,38 @@ function readSubValue(raw) {
 let metricsPollInterval = null
 function pollMetricRefs() {
   const ids = store.machineIds.value
-  if (!ids?.length) return
-  for (const machineId of ids) {
-    const ov = overviewSubscriptions[machineId]
-    if (!ov) continue
-    const fps = readSubValue(ov.fps?.value)
-    const cpu = readSubValue(ov.cpuLoad?.value)
-    const gpu = readSubValue(ov.gpuLoad?.value)
-    const mem = readSubValue(ov.memoryUsage?.value)
-    if (typeof fps === 'number') store.updateMetric(machineId, 'fps', fps)
-    if (typeof cpu === 'number') store.updateMetric(machineId, 'cpuLoad', cpu)
-    if (typeof gpu === 'number') store.updateMetric(machineId, 'gpuLoad', gpu)
-    if (typeof mem === 'number') store.updateMetric(machineId, 'memoryUsage', mem)
-    if (activeTab.value !== 'advanced') continue
-    const adv = advancedSubscriptions[machineId]
-    if (!adv) continue
-    const dr = readSubValue(adv.diskRead?.value)
-    const dw = readSubValue(adv.diskWrite?.value)
-    if (typeof dr === 'number') store.updateMetric(machineId, 'diskRead', dr)
-    if (typeof dw === 'number') store.updateMetric(machineId, 'diskWrite', dw)
+  if (ids?.length) {
+    for (const machineId of ids) {
+      if (activeTab.value === 'overview') {
+        const ov = overviewSubscriptions[machineId]
+        if (ov) {
+          const fps = readSubValue(ov.fps?.value)
+          const cpu = readSubValue(ov.cpuLoad?.value)
+          const gpu = readSubValue(ov.gpuLoad?.value)
+          const mem = readSubValue(ov.memoryUsage?.value)
+          const memMax = readSubValue(ov.memoryUsage?.memoryMax)
+          if (typeof fps === 'number') store.updateMetric(machineId, 'fps', fps)
+          if (typeof cpu === 'number') store.updateMetric(machineId, 'cpuLoad', cpu)
+          if (typeof gpu === 'number') store.updateMetric(machineId, 'gpuLoad', gpu)
+          if (typeof mem === 'number') store.updateMetric(machineId, 'memoryUsage', mem)
+          if (typeof memMax === 'number' && memMax > 0) store.setMemoryMax(machineId, memMax)
+        }
+      }
+      if (activeTab.value !== 'advanced') continue
+      const adv = advancedSubscriptions[machineId]
+      if (!adv) continue
+      const dr = readSubValue(adv.diskRead?.value)
+      const dw = readSubValue(adv.diskWrite?.value)
+      if (typeof dr === 'number') store.updateMetric(machineId, 'diskRead', dr)
+      if (typeof dw === 'number') store.updateMetric(machineId, 'diskWrite', dw)
+    }
   }
 }
 
 // Fetch session to get director + actors (machine list)
 async function fetchSession() {
   try {
-    const response = await fetch(`${apiBaseUrl}/api/session/status/session`)
+    const response = await fetch(`${apiBaseUrl.value}/api/session/status/session`)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const data = await response.json()
     const result = data.result
@@ -337,9 +417,9 @@ async function fetchSession() {
 
     let list = []
     if (result.isRunningSolo) {
-      const host = directorEndpoint.split(':')[0]
+      const host = directorEndpoint.value.split(':')[0]
       list = [{
-        uid: directorEndpoint,
+        uid: directorEndpoint.value,
         name: 'Local Machine',
         hostname: host || 'localhost',
         isLocal: true
@@ -363,7 +443,7 @@ async function fetchSession() {
 // Fetch machine health (for connection status)
 async function fetchHealthMetrics() {
   try {
-    const response = await fetch(`${apiBaseUrl}/api/session/status/health`)
+    const response = await fetch(`${apiBaseUrl.value}/api/session/status/health`)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     await response.json()
     store.setConnected(true)
@@ -375,23 +455,46 @@ async function fetchHealthMetrics() {
 
 let healthPollInterval = null
 
+function getPollMs() {
+  return config.updateRateMs > 0 ? config.updateRateMs : 500
+}
+
+function startIntervals() {
+  if (healthPollInterval) return
+  const ms = getPollMs()
+  healthPollInterval = setInterval(fetchHealthMetrics, ms)
+  metricsPollInterval = setInterval(pollMetricRefs, ms)
+}
+
+function stopIntervals() {
+  if (healthPollInterval) {
+    clearInterval(healthPollInterval)
+    healthPollInterval = null
+  }
+  if (metricsPollInterval) {
+    clearInterval(metricsPollInterval)
+    metricsPollInterval = null
+  }
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') startIntervals()
+  else stopIntervals()
+}
+
 onMounted(() => {
+  store.setUpdateRate(config.updateRateMs)
+  liveUpdate.reconnect()
   fetchSession()
   fetchHealthMetrics()
-  healthPollInterval = setInterval(() => {
-    fetchHealthMetrics()
-  }, 1000)
-  metricsPollInterval = setInterval(pollMetricRefs, 800)
+  startIntervals()
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 // Cleanup on unmount
 onUnmounted(() => {
-  if (healthPollInterval) {
-    clearInterval(healthPollInterval)
-  }
-  if (metricsPollInterval) {
-    clearInterval(metricsPollInterval)
-  }
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  stopIntervals()
 })
 
 // Actions
@@ -581,13 +684,13 @@ body {
 .main-content {
   flex: 1;
   overflow-y: auto;
-  padding: 24px;
+  padding: 16px;
 }
 
 .tab-content h1 {
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 600;
-  margin-bottom: 24px;
+  margin-bottom: 16px;
   color: #FFF;
 }
 
@@ -597,8 +700,8 @@ body {
 }
 
 .machine-section {
-  margin-bottom: 32px;
-  padding-bottom: 24px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
   border-bottom: 1px solid #333;
 }
 
@@ -607,10 +710,10 @@ body {
 }
 
 .machine-section-title {
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 600;
   color: #FFF;
-  margin-bottom: 16px;
+  margin-bottom: 10px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -624,30 +727,100 @@ body {
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 16px;
-  margin-bottom: 24px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
 }
 
-/* Playhead Section */
-.playhead-section {
-  background: #1E1E1E;
+/* Settings tab */
+.settings-section {
+  max-width: 420px;
+  margin-top: 1rem;
+  padding: 1.25rem;
+  background: var(--card-bg, #1E1E1E);
+  border: 1px solid var(--border, #333);
+  border-radius: var(--radius, 8px);
+}
+
+.settings-field {
+  margin-bottom: 1rem;
+}
+
+.settings-field label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary, #AAA);
+  margin-bottom: 0.35rem;
+}
+
+.settings-field input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9375rem;
+  background: #252525;
   border: 1px solid #333;
-  border-radius: 8px;
-  padding: 20px;
-  margin-top: 24px;
+  border-radius: 6px;
+  color: #FFF;
 }
 
-.playhead-section h2 {
-  font-size: 16px;
-  color: #AAA;
-  margin-bottom: 8px;
+.settings-field input:focus {
+  outline: none;
+  border-color: var(--accent, #6BFFDC);
 }
 
-.playhead-value {
-  font-size: 36px;
-  font-weight: 700;
-  color: #FF6DF0;
+.settings-hint {
+  display: block;
+  font-size: 0.75rem;
+  color: #888;
+  margin-top: 0.25rem;
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.settings-actions .btn-primary {
+  padding: 0.5rem 1.25rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  border-radius: 6px;
+  background: var(--accent, #6BFFDC);
+  color: #0d1117;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.settings-actions .btn-primary:hover {
+  background: #8affe8;
+  transform: translateY(-1px);
+}
+
+.settings-actions .btn-primary:active {
+  transform: translateY(0);
+}
+
+.settings-actions .btn-ghost {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  border-radius: 6px;
+  color: #888;
+  background: transparent;
+  border: 1px solid #444;
+}
+
+.settings-actions .btn-ghost:hover {
+  color: #ccc;
+  border-color: #555;
+  background: #252525;
+}
+
+.config-saved {
+  margin-top: 1rem;
+  font-size: 0.875rem;
+  color: var(--accent, #6BFFDC);
 }
 
 /* Scrollbar */

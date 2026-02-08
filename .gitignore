@@ -48,6 +48,7 @@ docker-compose.override.yml
 
 # Local build target override
 .build-target.local
+.build-target.server
 
 # Python
 __pycache__/

@@ -1,12 +1,14 @@
 # Pulse Plugin for Disguise Designer
 
-This is a fork of the [Pulse Plugin](https://help.disguise.one/designer/plugins/plugin-gallery) from the Designer Plugin Gallery, extended so that **all session machines (director, actors, and understudies) are shown on a single page**. It is designed to be run from a **separate monitoring machine** that connects to the director, giving you one dashboard for the whole session.
+This is a fork of the [Pulse Plugin](https://help.disguise.one/designer/plugins/plugin-gallery) from the Designer Plugin Gallery, extended so that **all session machines (director, actors, and understudies) are shown on a single page**.
+
+**d3 machine vs monitoring machine:** The plugin runs on a **d3 machine** (Disguise Designer hosts it and provides the data). A **monitoring machine** is a separate computer that opens the plugin in a browser and **renders the Vue app locally**. The d3 machine should only **pull/serve the data** (Live Update and session API). All **additional processing and notifications** (alert evaluation, history, and any future notifications like ntfy) run on the **monitoring machine**—not on the d3 machine. Open the plugin from the monitoring machine so that alerts and notifications run there.
 
 A real-time monitoring and control plugin for [Disguise Designer (d3)](https://www.disguise.one/) media server software. Pulse provides operators with live system metrics, alert notifications, and basic timeline control capabilities during live productions.
 
 ## Overview
 
-Pulse is designed for live event operators who need to monitor system health while running shows in Disguise Designer. The plugin connects to Designer's Live Update API and session REST API to provide real-time feedback on critical performance metrics for every machine in the session (director, actors, and understudies).
+Pulse is designed for live event operators who need to monitor system health while running shows in Disguise Designer. Open the plugin in a browser on a **monitoring machine**; it connects to the **d3 machine (director)** for Live Update and session REST API and shows real-time metrics for every machine in the session (director, actors, and understudies). Alert evaluation and notifications run on the monitoring machine.
 
 ### Key Features
 
@@ -18,8 +20,9 @@ Pulse is designed for live event operators who need to monitor system health whi
 
 ### How the plugin works
 
-- **Session and machine list** – On load, the plugin calls `GET /api/session/status/session`. From the response it builds the machine list: in solo mode a single “Local Machine”; otherwise director (marked local) + actors + understudies. The list is fetched once when the plugin opens; it is not refreshed periodically.
-- **Live Update subscriptions** – For each machine, metrics come from Disguise’s MonitoringManager. The **local machine** (director) uses `findLocalMonitor(monitorName)`; **remote machines** use `findRemoteMonitor(hostname, monitorName)` with hostname lowercased. Subscriptions are created for fps, Machine (CPU/GPU), ProcessMemory, and Disk; values are read via `object.seriesAverage(...)` and pushed into the store by watchers and an 800 ms polling fallback (so updates work even if the library populates refs asynchronously).
+- **Data from the d3 machine** – The d3 machine (director) serves the plugin and provides data via Live Update (WebSocket) and the session REST API. The Vue app runs in the browser on the **monitoring machine** and pulls data from the director. All alert logic and notifications run on the monitoring machine.
+- **Session and machine list** – On load, the Vue app calls `GET /api/session/status/session`. From the response it builds the machine list: in solo mode a single “Local Machine”; otherwise director (marked local) + actors + understudies. The list is fetched once when the plugin opens; it is not refreshed periodically.
+- **Live Update subscriptions** – For each machine, metrics come from the d3 director's MonitoringManager. The **local machine** (director) uses `findLocalMonitor(monitorName)`; **remote machines** (actors, understudies) use `findRemoteMonitor(hostname, monitorName)` with hostname lowercased. Subscriptions are created for fps, Machine (CPU/GPU), ProcessMemory, and Disk; values are read via `object.seriesAverage(...)` and pushed into the store by watchers and a 1 s polling fallback (so updates work even if the library populates refs asynchronously).
 - **Playhead** – Subscribes to `transportManager:default` for `object.player.tRender` and is frozen when the Advanced tab is not active.
 
 ### Technology Stack
@@ -47,9 +50,9 @@ Pulse is designed for live event operators who need to monitor system health whi
    ```
 3. Access the plugin at http://localhost:5173
 
-### Connecting to Designer
+### Connecting from the monitoring machine to the d3 director
 
-The plugin automatically connects to Designer using the hostname from the URL. You can also specify the director endpoint explicitly:
+From the **monitoring machine**, open the plugin in a browser. It connects to the **d3 machine (director)** using the hostname from the URL or the `director` query parameter. Example (replace with your director’s host or IP):
 
 ```
 http://localhost:5173?director=192.168.1.100:80
@@ -90,7 +93,8 @@ src/
 Build output is controlled by a *build target* file at the repo root. Vite reads the target path from `.build-target`; if `.build-target.local` exists it overrides that (and is gitignored so you can point to a local plugin folder without committing). Put one line in the file: either an absolute path or a path relative to the repo. `npm run build` ensures the directory exists and writes production assets there (it does not clear the directory first).
 
 - Commit `.build-target` with a sensible default (e.g. `dist`).
-- Use `.build-target.local` for a machine-specific path (e.g. your Designer plugins folder).
+- Use `.build-target.local` for a machine-specific path (e.g. your Designer plugins folder); it is gitignored.
+- Use `.build-target.server` for a server path (e.g. a network share or remote deploy path); it is gitignored. Run `BUILD_TARGET=server npm run build` to use it instead of `.build-target.local`.
 - When targeting a path outside the repo, ensure it is available inside Docker (e.g. add a bind mount in `docker-compose.override.yml` and point the build target to a path inside that mount).
 
 ### Targeting a path outside the repo on Windows

@@ -1,5 +1,1 @@
-{
-  "name": "MyPulsePlugin",
-  "requiresSession": true,
-  "isDisguise": true
-}
+{"name":"Pulse SG","requiresSession":true,"isDisguise":true}

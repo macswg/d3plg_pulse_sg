@@ -1,6 +1,7 @@
 import { reactive, computed } from 'vue'
 
 const METRIC_KEYS = ['cpuLoad', 'gpuLoad', 'memoryUsage', 'fps', 'diskRead', 'diskWrite']
+const METRIC_KEYS_SET = new Set(METRIC_KEYS)
 
 function createEmptyMetrics() {
   return {
@@ -46,11 +47,11 @@ const state = reactive({
   // Connection status
   connected: false,
 
-  // Session-wide playhead (Advanced tab)
-  playheadTRender: 0,
+  // Max history length (safety cap); entries older than 5s are pruned
+  maxHistoryLength: 100,
 
-  // Max history length
-  maxHistoryLength: 60
+  // Update rate (ms): 0 = no throttling, 1–5000 = min interval between metric updates
+  updateRateMs: 10
 })
 
 // Set machine list from session API
@@ -61,11 +62,15 @@ function setMachines(machinesList) {
   for (const m of machinesList) {
     const id = m.uid || m.id || m.hostname || String(Math.random())
     nextIds.push(id)
+    // Hostname for Live Update findRemoteMonitor: director expects nodeName (d3 API); API may also use hostname, address, ip
+    const hostname = (m.nodeName || m.hostname || m.address || m.ip || m.IP_address || '').toString().trim()
     nextMachines[id] = {
       id,
-      name: m.name || m.hostname || id,
-      hostname: m.hostname || '',
+      name: m.name || m.hostname || hostname || id,
+      hostname: hostname || '',
       isLocal: !!m.isLocal,
+      httpPort: m.httpPort ?? 80,
+      memoryMax: state.machines[id]?.memoryMax ?? 0,
       metrics: state.machines[id]?.metrics ? { ...state.machines[id].metrics } : createEmptyMetrics(),
       history: state.machines[id]?.history ? { ...state.machines[id].history } : createEmptyHistory()
     }
@@ -75,15 +80,43 @@ function setMachines(machinesList) {
   state.machines = nextMachines
 }
 
-// Update a metric value for a specific machine
+// Set max memory (MB) for a machine (from ProcessMemory "Physical Memory (MB)")
+function setMemoryMax(machineId, value) {
+  const machine = state.machines[machineId]
+  if (!machine) return
+  const num = typeof value === 'number' && value > 0 ? value : 0
+  if (machine.memoryMax === num) return
+  machine.memoryMax = num
+}
+
+// Throttle rapid updates per (machineId, key) when updateRateMs > 0
+const lastUpdateAt = {}
+
+// Set update rate (0 = no throttling, 1–5000 = min ms between updates)
+function setUpdateRate(ms) {
+  const n = typeof ms === 'number' ? Math.max(0, Math.min(5000, ms)) : 10
+  state.updateRateMs = n
+}
+
+// Update a metric value for a specific machine (always update value and history for graphs)
 function updateMetric(machineId, key, value) {
   const machine = state.machines[machineId]
-  if (!machine || !METRIC_KEYS.includes(key)) return
+  if (!machine || !METRIC_KEYS_SET.has(key)) return
+
+  const throttleKey = `${machineId}:${key}`
+  const now = Date.now()
+  const throttleMs = state.updateRateMs
+  if (throttleMs > 0 && lastUpdateAt[throttleKey] != null && now - lastUpdateAt[throttleKey] < throttleMs) return
+  lastUpdateAt[throttleKey] = now
 
   machine.metrics[key] = value
 
-  const historyEntry = { value, timestamp: Date.now() }
+  const historyEntry = { value, timestamp: now }
   machine.history[key].push(historyEntry)
+  const fiveSecondsAgo = now - 5000
+  while (machine.history[key].length > 0 && machine.history[key][0].timestamp < fiveSecondsAgo) {
+    machine.history[key].shift()
+  }
   if (machine.history[key].length > state.maxHistoryLength) {
     machine.history[key].shift()
   }
@@ -155,11 +188,6 @@ function setConnected(connected) {
   state.connected = connected
 }
 
-// Set session-wide playhead (for Advanced tab)
-function setPlayheadTRender(value) {
-  state.playheadTRender = value
-}
-
 // Clear all history (all machines)
 function clearHistory() {
   state.machineIds.forEach(id => {
@@ -200,7 +228,6 @@ const getters = {
   alertConfigs: computed(() => state.alerts),
   activeAlerts: computed(() => state.activeAlerts),
   isConnected: computed(() => state.connected),
-  playheadTRender: computed(() => state.playheadTRender),
   alertCount: computed(() => state.activeAlerts.length),
   // Backward compat: first machine's metrics/history for any single-machine UI
   currentMetrics: computed(() => {
@@ -218,9 +245,10 @@ export const useMetricsStore = () => ({
   ...getters,
   setMachines,
   updateMetric,
+  setMemoryMax,
+  setUpdateRate,
   updateAlertConfig,
   setConnected,
-  setPlayheadTRender,
   clearHistory,
   formatMetricName,
   getMetricUnit,
