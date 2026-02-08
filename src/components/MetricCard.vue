@@ -20,7 +20,7 @@
       </button>
     </div>
     
-    <div class="metric-body">
+    <div v-if="!valueBelowTitle" class="metric-body">
       <div class="metric-chart">
         <Line v-if="chartData" :data="chartData" :options="chartOptions" />
       </div>
@@ -56,7 +56,7 @@ const props = defineProps({
 
 defineEmits(['click', 'configure'])
 
-// When valueMax is set (e.g. Memory Usage), show value below the title
+// Show value below title when valueMax is provided (e.g., Memory Usage "used / max")
 const valueBelowTitle = computed(() => props.valueMax != null && props.valueMax > 0)
 
 // Format the current value (or "used / max" when valueMax is set)
@@ -147,12 +147,15 @@ const chartOptions = {
 
 <style scoped>
 .metric-card {
+  display: flex;
+  flex-direction: column;
   background: #1E1E1E;
   border-radius: 6px;
-  padding: 10px 12px 0 12px;
+  padding: 4px 12px 8px 12px;
   cursor: pointer;
   transition: all 0.2s ease;
   border: 1px solid #333;
+  min-height: 0;
 }
 
 .metric-card:hover {
@@ -183,24 +186,11 @@ const chartOptions = {
   margin-bottom: 6px;
 }
 
-.metric-header-top {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
 .metric-header-row {
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
   min-width: 0;
-}
-
-.metric-value-below {
-  font-size: 20px;
-  font-weight: 600;
-  white-space: nowrap;
 }
 
 .metric-title {
@@ -226,8 +216,12 @@ const chartOptions = {
 }
 
 .metric-body {
+  flex: 1;
   min-height: 0;
-  margin-bottom: -4px;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
 }
 
 .metric-value {
@@ -243,9 +237,17 @@ const chartOptions = {
   opacity: 0.7;
 }
 
+.metric-value-below {
+  font-size: 20px;
+  font-weight: 600;
+  white-space: nowrap;
+  margin-top: 4px;
+  padding-bottom: 20px;
+}
+
 .metric-chart {
-  flex: 1;
   min-width: 0;
   height: 44px;
+  flex-shrink: 0;
 }
 </style>

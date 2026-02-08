@@ -2,6 +2,8 @@ import { reactive, computed } from 'vue'
 
 const METRIC_KEYS = ['cpuLoad', 'gpuLoad', 'memoryUsage', 'fps', 'diskRead', 'diskWrite']
 const METRIC_KEYS_SET = new Set(METRIC_KEYS)
+// Overview metrics: machine is "stale" only when all of these have had no update for 5s (avoids one stuck value keeping it live)
+const OVERVIEW_METRIC_KEYS = ['cpuLoad', 'gpuLoad', 'memoryUsage', 'fps']
 
 function createEmptyMetrics() {
   return {
@@ -71,6 +73,7 @@ function setMachines(machinesList) {
       isLocal: !!m.isLocal,
       httpPort: m.httpPort ?? 80,
       memoryMax: state.machines[id]?.memoryMax ?? 0,
+      metricLastUpdateAt: state.machines[id]?.metricLastUpdateAt ? { ...state.machines[id].metricLastUpdateAt } : {},
       metrics: state.machines[id]?.metrics ? { ...state.machines[id].metrics } : createEmptyMetrics(),
       history: state.machines[id]?.history ? { ...state.machines[id].history } : createEmptyHistory()
     }
@@ -110,6 +113,8 @@ function updateMetric(machineId, key, value) {
   lastUpdateAt[throttleKey] = now
 
   machine.metrics[key] = value
+  if (!machine.metricLastUpdateAt) machine.metricLastUpdateAt = {}
+  machine.metricLastUpdateAt[key] = now
 
   const historyEntry = { value, timestamp: now }
   machine.history[key].push(historyEntry)

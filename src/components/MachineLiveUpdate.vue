@@ -12,7 +12,8 @@ const props = defineProps({
   machineId: { type: String, required: true },
   machine: { type: Object, required: true },
   directorEndpoint: { type: String, required: true },
-  updateRateMs: { type: Number, default: 10 }
+  updateRateMs: { type: Number, default: 10 },
+  isStale: { type: Boolean, default: false }
 })
 
 const store = useMetricsStore()
@@ -119,6 +120,34 @@ watch(() => props.updateRateMs, () => {
   stopPolling()
   startPolling()
 }, { flush: 'post' })
+
+// Freeze/thaw subscriptions when machine becomes stale or recovers
+function freezeAll() {
+  if (overviewSubs) {
+    Object.values(overviewSubs).forEach(sub => sub?.freeze?.())
+  }
+  if (advancedSubs) {
+    Object.values(advancedSubs).forEach(sub => sub?.freeze?.())
+  }
+}
+
+function thawAll() {
+  if (overviewSubs) {
+    Object.values(overviewSubs).forEach(sub => sub?.thaw?.())
+  }
+  if (advancedSubs) {
+    Object.values(advancedSubs).forEach(sub => sub?.thaw?.())
+  }
+  liveUpdate.reconnect()
+}
+
+watch(() => props.isStale, (stale, wasStale) => {
+  if (stale && !wasStale) {
+    freezeAll()
+  } else if (!stale && wasStale) {
+    thawAll()
+  }
+})
 
 onMounted(() => {
   if (endpoint) {
