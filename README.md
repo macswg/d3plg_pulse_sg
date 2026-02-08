@@ -1,5 +1,7 @@
 # Pulse Plugin for Disguise Designer
 
+This is a fork of the [Pulse Plugin](https://help.disguise.one/designer/plugins/plugin-gallery) from the Designer Plugin Gallery, extended so that **all session machines (director, actors, and understudies) are shown on a single page**. It is designed to be run from a **separate monitoring machine** that connects to the director, giving you one dashboard for the whole session.
+
 A real-time monitoring and control plugin for [Disguise Designer (d3)](https://www.disguise.one/) media server software. Pulse provides operators with live system metrics, alert notifications, and basic timeline control capabilities during live productions.
 
 ## Overview

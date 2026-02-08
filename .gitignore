@@ -90,9 +90,6 @@ dmypy.json
 .ruff_cache/
 .pypirc
 
-# Generated type stubs (large auto-generated files)
-src/d3.pyi
-
 # Abstra
 .abstra/
 
