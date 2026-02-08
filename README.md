@@ -4,15 +4,21 @@ A real-time monitoring and control plugin for [Disguise Designer (d3)](https://w
 
 ## Overview
 
-Pulse is designed for live event operators who need to monitor system health while running shows in Disguise Designer. The plugin connects to Designer's live update system to provide real-time feedback on critical performance metrics.
+Pulse is designed for live event operators who need to monitor system health while running shows in Disguise Designer. The plugin connects to Designer's Live Update API and session REST API to provide real-time feedback on critical performance metrics for every machine in the session (director, actors, and understudies).
 
 ### Key Features
 
-- **Real-Time Playhead Display** - Monitor the current playhead position from Designer's transport manager
-- **System Metrics Monitoring** - Track CPU, GPU, memory usage, frame rate, and disk I/O with visual sparkline charts
-- **Configurable Alerts** - Set warning and critical thresholds for each metric with visual indicators
-- **Timeline Control** - Execute Python scripts in Designer (e.g., add text layers to the timeline)
-- **Live Connection Status** - Visual overlay showing connection state to the Designer instance
+- **Per-machine metrics** – One section per machine (director, actors, understudies). The local/director machine is labeled “(this machine)”.
+- **Overview tab** – CPU load, GPU load, memory usage, and frame rate with sparkline history for each machine.
+- **Advanced tab** – Disk read/write and session playhead position. Disk and playhead subscriptions are frozen when the tab is inactive to reduce load.
+- **Configurable alerts** – Set warning and critical thresholds per metric; alerts show machine name and link to the relevant tab/metric.
+- **Live connection status** – Overlay shows connection state to the director.
+
+### How the plugin works
+
+- **Session and machine list** – On load, the plugin calls `GET /api/session/status/session`. From the response it builds the machine list: in solo mode a single “Local Machine”; otherwise director (marked local) + actors + understudies. The list is fetched once when the plugin opens; it is not refreshed periodically.
+- **Live Update subscriptions** – For each machine, metrics come from Disguise’s MonitoringManager. The **local machine** (director) uses `findLocalMonitor(monitorName)`; **remote machines** use `findRemoteMonitor(hostname, monitorName)` with hostname lowercased. Subscriptions are created for fps, Machine (CPU/GPU), ProcessMemory, and Disk; values are read via `object.seriesAverage(...)` and pushed into the store by watchers and an 800 ms polling fallback (so updates work even if the library populates refs asynchronously).
+- **Playhead** – Subscribes to `transportManager:default` for `object.player.tRender` and is frozen when the Advanced tab is not active.
 
 ### Technology Stack
 
@@ -21,7 +27,7 @@ Pulse is designed for live event operators who need to monitor system health whi
 - **Charts**: Chart.js with vue-chartjs
 - **Designer Integration**: 
   - `@disguise-one/vue-liveupdate` for real-time data subscriptions
-  - `@disguise-one/designer-pythonapi` for Python script execution
+  - `@disguise-one/designer-pythonapi` for Python script execution (e.g. TextLayerControl)
 
 ## Getting Started
 
@@ -51,15 +57,16 @@ http://localhost:5173?director=192.168.1.100:80
 
 ```
 src/
-├── App.vue                      # Main application component
+├── App.vue                      # Main app: session fetch, per-machine subscriptions, tabs
 ├── components/
-│   ├── MetricCard.vue           # Metric display with sparkline chart
-│   ├── PlayheadDisplay.vue      # Real-time playhead position
-│   └── TextLayerControl.vue     # Python script execution interface
+│   ├── MetricCard.vue           # Metric value + sparkline; threshold colours
+│   ├── AlertManager.vue        # Active alerts list + per-metric alert config
+│   ├── PlayheadDisplay.vue     # Real-time playhead (optional use)
+│   └── TextLayerControl.vue    # Python script execution interface
 ├── stores/
-│   └── metrics.js               # Reactive metrics store with alert system
-├── hello_world.py               # Example Python script for Designer
-└── d3.pyi                       # Python type stubs for Designer API
+│   └── metrics.js               # Per-machine metrics, history, alerts, playhead
+├── main.js
+└── hello_world.py               # Example Python script for Designer
 ```
 
 ## Docker Development Workflow
@@ -78,19 +85,11 @@ src/
 
 ### Building to a plugin-specific directory
 
-The build output location is controlled by the `.build-target` file at the repo root. Put either an absolute path or a path relative to the repo in that file. During `npm run build` the Vite config reads the file, ensures the directory exists, and writes the production assets there (without clearing it automatically). This allows each plugin to point to its own destination without changing source files.
+Build output is controlled by a *build target* file at the repo root. Vite reads the target path from `.build-target`; if `.build-target.local` exists it overrides that (and is gitignored so you can point to a local plugin folder without committing). Put one line in the file: either an absolute path or a path relative to the repo. `npm run build` ensures the directory exists and writes production assets there (it does not clear the directory first).
 
-Tips:
-
-- Check the file into version control with a sensible default (the template uses `dist`).
-- When targeting a host path outside the repository, make sure it is available inside Docker. You can add an extra bind mount in `docker-compose.override.yml`, for example:
-  ```yaml
-  services:
-    dev:
-      volumes:
-        - /path/to/plugin:/plugin-output
-  ```
-  and then point `.build-target` to `/plugin-output`.
+- Commit `.build-target` with a sensible default (e.g. `dist`).
+- Use `.build-target.local` for a machine-specific path (e.g. your Designer plugins folder).
+- When targeting a path outside the repo, ensure it is available inside Docker (e.g. add a bind mount in `docker-compose.override.yml` and point the build target to a path inside that mount).
 
 ### Targeting a path outside the repo on Windows
 

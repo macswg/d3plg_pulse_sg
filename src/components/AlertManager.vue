@@ -20,9 +20,12 @@
           :key="alert.id"
           class="alert-card"
           :class="alert.severity"
-          @click="$emit('view-metric', alert.metricKey)"
+          @click="$emit('view-metric', { machineId: alert.machineId, metricKey: alert.metricKey })"
         >
-          <div class="alert-title">{{ formatMetricName(alert.metricKey) }}</div>
+          <div class="alert-title">
+            <span v-if="alert.machineName" class="alert-machine">{{ alert.machineName }} – </span>
+            {{ formatMetricName(alert.metricKey) }}
+          </div>
           <div class="alert-message">{{ alert.message }}</div>
           <div class="alert-time">Triggered at {{ formatTime(alert.timestamp) }}</div>
         </div>
@@ -184,6 +187,11 @@ function updateThreshold(key, thresholdKey, value) {
   font-weight: 600;
   color: #FFF;
   margin-bottom: 4px;
+}
+
+.alert-machine {
+  color: #6BFFDC;
+  font-weight: 500;
 }
 
 .alert-message {

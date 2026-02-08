@@ -36,77 +36,102 @@
 
     <!-- Main Content -->
     <main class="main-content">
-      <!-- Overview Tab -->
+      <!-- Overview Tab: one section per machine -->
       <div v-if="activeTab === 'overview'" class="tab-content">
         <h1>System Overview</h1>
-        <div class="metrics-grid">
-          <MetricCard
-            title="CPU Load"
-            :value="metrics.cpuLoad"
-            unit="%"
-            :history="history.cpuLoad"
-            :thresholds="{ warning: 80, critical: 90 }"
-            :alertConfig="alertConfigs.cpuLoad"
-            @configure="openAlertConfig('cpuLoad')"
-          />
-          <MetricCard
-            title="GPU Load"
-            :value="metrics.gpuLoad"
-            unit="%"
-            :history="history.gpuLoad"
-            :thresholds="{ warning: 80, critical: 90 }"
-            :alertConfig="alertConfigs.gpuLoad"
-            @configure="openAlertConfig('gpuLoad')"
-          />
-          <MetricCard
-            title="Memory Usage"
-            :value="metrics.memoryUsage"
-            unit="MB"
-            :decimals="0"
-            :history="history.memoryUsage"
-            :thresholds="{ warning: 4000, critical: 8000 }"
-            :alertConfig="alertConfigs.memoryUsage"
-            @configure="openAlertConfig('memoryUsage')"
-          />
-          <MetricCard
-            title="Frame Rate"
-            :value="metrics.fps"
-            unit="FPS"
-            :history="history.fps"
-            :thresholds="{ warning: 50, critical: 30 }"
-            :alertConfig="{ ...alertConfigs.fps, comparison: 'less' }"
-            @configure="openAlertConfig('fps')"
-          />
-        </div>
+        <div v-if="machineIds.length === 0" class="loading-state">Loading session...</div>
+        <template v-else>
+          <section
+            v-for="machineId in machineIds"
+            :key="machineId"
+            class="machine-section"
+          >
+            <h2 class="machine-section-title">
+              {{ machines[machineId]?.name || machineId }}
+              <span v-if="machines[machineId]?.isLocal" class="local-badge">(this machine)</span>
+            </h2>
+            <div class="metrics-grid">
+              <MetricCard
+                title="CPU Load"
+                :value="machines[machineId]?.metrics?.cpuLoad ?? 0"
+                unit="%"
+                :history="machines[machineId]?.history?.cpuLoad ?? []"
+                :thresholds="{ warning: 80, critical: 90 }"
+                :alertConfig="alertConfigs.cpuLoad"
+                @configure="openAlertConfig('cpuLoad')"
+              />
+              <MetricCard
+                title="GPU Load"
+                :value="machines[machineId]?.metrics?.gpuLoad ?? 0"
+                unit="%"
+                :history="machines[machineId]?.history?.gpuLoad ?? []"
+                :thresholds="{ warning: 80, critical: 90 }"
+                :alertConfig="alertConfigs.gpuLoad"
+                @configure="openAlertConfig('gpuLoad')"
+              />
+              <MetricCard
+                title="Memory Usage"
+                :value="machines[machineId]?.metrics?.memoryUsage ?? 0"
+                unit="MB"
+                :decimals="0"
+                :history="machines[machineId]?.history?.memoryUsage ?? []"
+                :thresholds="{ warning: 4000, critical: 8000 }"
+                :alertConfig="alertConfigs.memoryUsage"
+                @configure="openAlertConfig('memoryUsage')"
+              />
+              <MetricCard
+                title="Frame Rate"
+                :value="machines[machineId]?.metrics?.fps ?? 0"
+                unit="FPS"
+                :history="machines[machineId]?.history?.fps ?? []"
+                :thresholds="{ warning: 50, critical: 30 }"
+                :alertConfig="{ ...alertConfigs.fps, comparison: 'less' }"
+                @configure="openAlertConfig('fps')"
+              />
+            </div>
+          </section>
+        </template>
       </div>
 
-      <!-- Advanced Tab -->
+      <!-- Advanced Tab: one section per machine + playhead -->
       <div v-if="activeTab === 'advanced'" class="tab-content">
         <h1>Advanced Metrics</h1>
-        <div class="metrics-grid">
-          <MetricCard
-            title="Disk Read"
-            :value="metrics.diskRead"
-            unit="MB/s"
-            :decimals="2"
-            :history="history.diskRead"
-            @configure="openAlertConfig('diskRead')"
-          />
-          <MetricCard
-            title="Disk Write"
-            :value="metrics.diskWrite"
-            unit="MB/s"
-            :decimals="2"
-            :history="history.diskWrite"
-            @configure="openAlertConfig('diskWrite')"
-          />
-        </div>
-        
-        <!-- Playhead Display -->
+        <!-- Playhead (session-wide) -->
         <div class="playhead-section">
           <h2>Playhead Position</h2>
-          <div class="playhead-value">{{ player_tRender !== undefined ? player_tRender.toFixed(2) : '0.00' }}s</div>
+          <div class="playhead-value">{{ playheadTRender.toFixed(2) }}s</div>
         </div>
+        <div v-if="machineIds.length === 0" class="loading-state">Loading session...</div>
+        <template v-else>
+          <section
+            v-for="machineId in machineIds"
+            :key="machineId"
+            class="machine-section"
+          >
+            <h2 class="machine-section-title">
+              {{ machines[machineId]?.name || machineId }}
+              <span v-if="machines[machineId]?.isLocal" class="local-badge">(this machine)</span>
+            </h2>
+            <div class="metrics-grid">
+              <MetricCard
+                title="Disk Read"
+                :value="machines[machineId]?.metrics?.diskRead ?? 0"
+                unit="MB/s"
+                :decimals="2"
+                :history="machines[machineId]?.history?.diskRead ?? []"
+                @configure="openAlertConfig('diskRead')"
+              />
+              <MetricCard
+                title="Disk Write"
+                :value="machines[machineId]?.metrics?.diskWrite ?? 0"
+                unit="MB/s"
+                :decimals="2"
+                :history="machines[machineId]?.history?.diskWrite ?? []"
+                @configure="openAlertConfig('diskWrite')"
+              />
+            </div>
+          </section>
+        </template>
       </div>
 
       <!-- Alerts Tab -->
@@ -121,23 +146,38 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, reactive } from 'vue'
 import { useLiveUpdate, LiveUpdateOverlay } from '@disguise-one/vue-liveupdate'
 import MetricCard from './components/MetricCard.vue'
 import AlertManager from './components/AlertManager.vue'
 import { useMetricsStore } from './stores/metrics'
 
-// Extract the director endpoint from the URL query parameters
+// Extract the director endpoint for Live Update and REST API
+// When running in Disguise Designer the plugin may be loaded from file:// (built output),
+// so we must not rely on window.location.protocol or hostname for the director.
 const urlParams = new URLSearchParams(window.location.search)
 const { hostname, protocol } = window.location
-const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1'
-const defaultDirector = isLocalhost ? 'localhost:80' : `${hostname}:80`
-const directorEndpoint = urlParams.get('director') || defaultDirector
 
-// Build the REST API base URL
-const apiBaseUrl = `${protocol}//${directorEndpoint}`
+// Director: prefer query param (Designer injects this), then sensible defaults
+let directorEndpoint = urlParams.get('director') || null
+if (!directorEndpoint) {
+  // file:// or empty hostname => same machine as Designer => localhost
+  if (protocol === 'file:' || !hostname) {
+    directorEndpoint = 'localhost:80'
+  } else {
+    directorEndpoint = hostname === 'localhost' || hostname === '127.0.0.1'
+      ? 'localhost:80'
+      : `${hostname}:80`
+  }
+}
 
-// Initialize live update
+// Strip any protocol the param might contain (e.g. "http://localhost:80" -> "localhost:80")
+directorEndpoint = directorEndpoint.replace(/^https?:\/\//i, '').trim()
+
+// REST API base URL: always use http when talking to the director (never file:)
+const apiBaseUrl = `http://${directorEndpoint}`
+
+// Initialize live update (uses ws:// with this host:port)
 const liveUpdate = useLiveUpdate(directorEndpoint)
 
 // Initialize metrics store
@@ -166,178 +206,191 @@ const tabs = [
   }
 ]
 
-// Computed properties from store
-const metrics = computed(() => store.currentMetrics.value)
-const history = computed(() => store.metricHistory.value)
+// Computed properties from store (unwrap refs for template)
+const machineIds = computed(() => store.machineIds.value)
+const machines = computed(() => store.machines.value)
 const alertConfigs = computed(() => store.alertConfigs.value)
 const alertCount = computed(() => store.alertCount.value)
 const isConnected = computed(() => store.isConnected.value)
+const playheadTRender = computed(() => store.playheadTRender.value ?? 0)
 
-// Subscribe to playhead via Live Update
-// Using subscribe() instead of autoSubscribe() so we can freeze/thaw based on tab
+// Session-wide playhead (Advanced tab)
 const playheadMonitor = liveUpdate.subscribe(
   'transportManager:default',
   { tRender: 'object.player.tRender' }
 )
 
-// Expose playhead value for template (computed to handle reactivity)
-const player_tRender = computed(() => playheadMonitor.tRender?.value)
+// Per-machine subscription refs (Overview: fps, cpu, gpu, memory; Advanced: diskRead, diskWrite)
+const overviewSubscriptions = reactive({})
+const advancedSubscriptions = reactive({})
 
-// Subscribe to monitoring graphs via MonitoringManager subsystem
-// Using findLocalMonitor to get local machine metrics
-// The seriesAverage("<series>", 1) method returns the latest value from the specified series
-// See: https://developer.disguise.one/api/session/liveupdate/
-//
-// Monitor names and series discovered from reference Pulse plugin:
-// - Machine monitor: "CPU Time", "GPU Time" series
-// - fps monitor: "Actual" series
-// - ProcessMemory monitor: "Usage (MB)" series
-//
-// IMPORTANT: Using subscribe() instead of autoSubscribe() because the property path
-// contains special characters (parentheses, quotes). subscribe() allows us to specify
-// a custom local name for the property.
+function objectPath(machine, monitorName) {
+  if (machine.isLocal) {
+    return `subsystem:MonitoringManager.findLocalMonitor("${monitorName}")`
+  }
+  const host = (machine.hostname || 'localhost').toString().toLowerCase()
+  return `subsystem:MonitoringManager.findRemoteMonitor("${host}", "${monitorName}")`
+}
 
-// FPS graph - monitor: "fps", series: "Actual"
-const fpsMonitor = liveUpdate.subscribe(
-  'subsystem:MonitoringManager.findLocalMonitor("fps")',
-  { value: 'object.seriesAverage("Actual", 1)' }
+// When machines are set, create Live Update subscriptions per machine
+watch(
+  () => store.machineIds.value,
+  (ids) => {
+    if (!ids || ids.length === 0) return
+    for (const machineId of ids) {
+      if (overviewSubscriptions[machineId]) continue
+      const machine = store.machines.value[machineId]
+      if (!machine) continue
+
+      const obj = (name) => objectPath(machine, name)
+      overviewSubscriptions[machineId] = {
+        fps: liveUpdate.subscribe(obj('fps'), { value: 'object.seriesAverage("Actual", 1)' }),
+        cpuLoad: liveUpdate.subscribe(obj('Machine'), { value: 'object.seriesAverage("CPU Time", 1)' }),
+        gpuLoad: liveUpdate.subscribe(obj('Machine'), { value: 'object.seriesAverage("GPU Time", 1)' }),
+        memoryUsage: liveUpdate.subscribe(obj('ProcessMemory'), { value: 'object.seriesAverage("Usage (MB)", 1)' })
+      }
+      advancedSubscriptions[machineId] = {
+        diskRead: liveUpdate.subscribe(obj('Disk'), { value: 'object.seriesAverage("Read (MB/s)", 1)' }),
+        diskWrite: liveUpdate.subscribe(obj('Disk'), { value: 'object.seriesAverage("Write (MB/s)", 1)' })
+      }
+
+      // Watchers: push subscription values to store (ref may be populated async)
+      const ov = overviewSubscriptions[machineId]
+      const pushOv = (ref, key) => watch(() => ref?.value, (val) => {
+        const v = typeof val === 'number' ? val : val?.value
+        if (v != null) store.updateMetric(machineId, key, v)
+      }, { deep: true })
+      pushOv(ov.fps, 'fps')
+      pushOv(ov.cpuLoad, 'cpuLoad')
+      pushOv(ov.gpuLoad, 'gpuLoad')
+      pushOv(ov.memoryUsage, 'memoryUsage')
+      const adv = advancedSubscriptions[machineId]
+      pushOv(adv.diskRead, 'diskRead')
+      pushOv(adv.diskWrite, 'diskWrite')
+    }
+  },
+  { immediate: true, deep: true }
 )
 
-// CPU Load graph - monitor: "Machine", series: "CPU Time"
-const cpuMonitor = liveUpdate.subscribe(
-  'subsystem:MonitoringManager.findLocalMonitor("Machine")',
-  { value: 'object.seriesAverage("CPU Time", 1)' }
-)
-
-// GPU Load graph - monitor: "Machine", series: "GPU Time"
-const gpuMonitor = liveUpdate.subscribe(
-  'subsystem:MonitoringManager.findLocalMonitor("Machine")',
-  { value: 'object.seriesAverage("GPU Time", 1)' }
-)
-
-// Process Memory graph - monitor: "ProcessMemory", series: "Usage (MB)"
-const memoryMonitor = liveUpdate.subscribe(
-  'subsystem:MonitoringManager.findLocalMonitor("ProcessMemory")',
-  { value: 'object.seriesAverage("Usage (MB)", 1)' }
-)
-
-// Disk metrics - only subscribed when Advanced tab is active
-// Monitor: "Disk", Series: "Read (MB/s)" and "Write (MB/s)"
-const diskReadMonitor = liveUpdate.subscribe(
-  'subsystem:MonitoringManager.findLocalMonitor("Disk")',
-  { value: 'object.seriesAverage("Read (MB/s)", 1)' }
-)
-
-const diskWriteMonitor = liveUpdate.subscribe(
-  'subsystem:MonitoringManager.findLocalMonitor("Disk")',
-  { value: 'object.seriesAverage("Write (MB/s)", 1)' }
-)
-
-// Freeze Advanced tab subscriptions initially (will thaw when Advanced tab is active)
-// Using the freeze/thaw pattern from vue-liveupdate for performance optimization
-// This includes: disk read, disk write, and playhead position
-diskReadMonitor.value?.freeze?.()
-diskWriteMonitor.value?.freeze?.()
+// Playhead: update store and freeze when not on Advanced
+watch(() => playheadMonitor.tRender?.value, (v) => {
+  if (v != null) store.setPlayheadTRender(v)
+}, { deep: true })
 playheadMonitor.tRender?.freeze?.()
 
-// Watch for tab changes to freeze/thaw Advanced tab subscriptions
+// Freeze/thaw Advanced tab subscriptions (disk per machine + playhead)
 watch(activeTab, (newTab, oldTab) => {
   if (newTab === 'advanced') {
-    // Thaw (resume) subscriptions when entering Advanced tab
-    diskReadMonitor.value?.thaw?.()
-    diskWriteMonitor.value?.thaw?.()
+    Object.values(advancedSubscriptions).forEach(s => {
+      s?.diskRead?.thaw?.()
+      s?.diskWrite?.thaw?.()
+    })
     playheadMonitor.tRender?.thaw?.()
-    console.log('Advanced tab subscriptions activated (disk + playhead)')
   } else if (oldTab === 'advanced') {
-    // Freeze (pause) subscriptions when leaving Advanced tab
-    diskReadMonitor.value?.freeze?.()
-    diskWriteMonitor.value?.freeze?.()
+    Object.values(advancedSubscriptions).forEach(s => {
+      s?.diskRead?.freeze?.()
+      s?.diskWrite?.freeze?.()
+    })
     playheadMonitor.tRender?.freeze?.()
-    console.log('Advanced tab subscriptions paused (disk + playhead)')
   }
 }, { immediate: true })
 
-// Debug: Log monitor subscription values to console
-watch([fpsMonitor.value, cpuMonitor.value, gpuMonitor.value, memoryMonitor.value], ([fps, cpu, gpu, mem]) => {
-  console.log('Monitor values:', { fps, cpu, gpu, memory: mem })
-}, { immediate: true })
+// Read subscription value (library may expose number or { value } ref)
+function readSubValue(raw) {
+  return typeof raw === 'number' ? raw : raw?.value
+}
 
-// Watch for Live Update metric changes and push to store
-// With subscribe(), we used { value: ... } so the property is accessed as monitor.value
-watch(() => fpsMonitor.value?.value, (val) => {
-  if (val !== undefined && val !== null) {
-    store.updateMetric('fps', val)
+// Poll subscription refs and push to store (library refs may not be Vue-reactive when populated async)
+let metricsPollInterval = null
+function pollMetricRefs() {
+  const ids = store.machineIds.value
+  if (!ids?.length) return
+  for (const machineId of ids) {
+    const ov = overviewSubscriptions[machineId]
+    if (!ov) continue
+    const fps = readSubValue(ov.fps?.value)
+    const cpu = readSubValue(ov.cpuLoad?.value)
+    const gpu = readSubValue(ov.gpuLoad?.value)
+    const mem = readSubValue(ov.memoryUsage?.value)
+    if (typeof fps === 'number') store.updateMetric(machineId, 'fps', fps)
+    if (typeof cpu === 'number') store.updateMetric(machineId, 'cpuLoad', cpu)
+    if (typeof gpu === 'number') store.updateMetric(machineId, 'gpuLoad', gpu)
+    if (typeof mem === 'number') store.updateMetric(machineId, 'memoryUsage', mem)
+    if (activeTab.value !== 'advanced') continue
+    const adv = advancedSubscriptions[machineId]
+    if (!adv) continue
+    const dr = readSubValue(adv.diskRead?.value)
+    const dw = readSubValue(adv.diskWrite?.value)
+    if (typeof dr === 'number') store.updateMetric(machineId, 'diskRead', dr)
+    if (typeof dw === 'number') store.updateMetric(machineId, 'diskWrite', dw)
   }
-}, { deep: true })
+}
 
-watch(() => cpuMonitor.value?.value, (val) => {
-  if (val !== undefined && val !== null) {
-    store.updateMetric('cpuLoad', val)
+// Fetch session to get director + actors (machine list)
+async function fetchSession() {
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/session/status/session`)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const data = await response.json()
+    const result = data.result
+    if (!result) return
+
+    let list = []
+    if (result.isRunningSolo) {
+      const host = directorEndpoint.split(':')[0]
+      list = [{
+        uid: directorEndpoint,
+        name: 'Local Machine',
+        hostname: host || 'localhost',
+        isLocal: true
+      }]
+    } else {
+      const director = result.director
+      const actors = result.actors || []
+      const understudies = result.understudies || []
+      list = [
+        { ...director, uid: director?.uid || director?.hostname || 'director', isLocal: true },
+        ...actors.map(a => ({ ...a, uid: a?.uid || a?.hostname, isLocal: false })),
+        ...understudies.map(u => ({ ...u, uid: u?.uid || u?.hostname, isLocal: false }))
+      ]
+    }
+    store.setMachines(list)
+  } catch (error) {
+    console.warn('Failed to fetch session:', error.message)
   }
-}, { deep: true })
+}
 
-watch(() => gpuMonitor.value?.value, (val) => {
-  if (val !== undefined && val !== null) {
-    store.updateMetric('gpuLoad', val)
-  }
-}, { deep: true })
-
-watch(() => memoryMonitor.value?.value, (val) => {
-  if (val !== undefined && val !== null) {
-    store.updateMetric('memoryUsage', val)
-  }
-}, { deep: true })
-
-// Watch disk metrics (only updates when subscriptions are active/thawed)
-watch(() => diskReadMonitor.value?.value, (val) => {
-  if (val !== undefined && val !== null) {
-    store.updateMetric('diskRead', val)
-  }
-}, { deep: true })
-
-watch(() => diskWriteMonitor.value?.value, (val) => {
-  if (val !== undefined && val !== null) {
-    store.updateMetric('diskWrite', val)
-  }
-}, { deep: true })
-
-// Poll interval reference for cleanup
-let healthPollInterval = null
-
-// Fetch machine health metrics from REST API (for connection status)
+// Fetch machine health (for connection status)
 async function fetchHealthMetrics() {
   try {
     const response = await fetch(`${apiBaseUrl}/api/session/status/health`)
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
-    }
-    
-    const data = await response.json()
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    await response.json()
     store.setConnected(true)
-    
-    // Note: FPS, CPU, GPU, Memory, and Disk metrics now come from Live Update subscriptions
-    // This health endpoint is primarily used to check connection status
   } catch (error) {
     console.warn('Failed to fetch health metrics:', error.message)
     store.setConnected(false)
   }
 }
 
-// Start polling for health metrics
+let healthPollInterval = null
+
 onMounted(() => {
-  // Initial fetch
+  fetchSession()
   fetchHealthMetrics()
-  
-  // Poll health metrics every 1 second
   healthPollInterval = setInterval(() => {
     fetchHealthMetrics()
   }, 1000)
+  metricsPollInterval = setInterval(pollMetricRefs, 800)
 })
 
 // Cleanup on unmount
 onUnmounted(() => {
   if (healthPollInterval) {
     clearInterval(healthPollInterval)
+  }
+  if (metricsPollInterval) {
+    clearInterval(metricsPollInterval)
   }
 })
 
@@ -347,8 +400,10 @@ function openAlertConfig(metricKey) {
   activeTab.value = 'alerts'
 }
 
-function viewMetric(metricKey) {
-  // Switch to overview or advanced based on metric
+function viewMetric(payload) {
+  // Payload can be metricKey (string) or { machineId, metricKey } from AlertManager
+  const metricKey = typeof payload === 'string' ? payload : payload?.metricKey
+  if (!metricKey) return
   if (['diskRead', 'diskWrite'].includes(metricKey)) {
     activeTab.value = 'advanced'
   } else {
@@ -534,6 +589,37 @@ body {
   font-weight: 600;
   margin-bottom: 24px;
   color: #FFF;
+}
+
+.loading-state {
+  color: #888;
+  padding: 24px 0;
+}
+
+.machine-section {
+  margin-bottom: 32px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #333;
+}
+
+.machine-section:last-child {
+  border-bottom: none;
+}
+
+.machine-section-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #FFF;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.local-badge {
+  font-size: 12px;
+  font-weight: 400;
+  color: #6BFFDC;
 }
 
 .metrics-grid {

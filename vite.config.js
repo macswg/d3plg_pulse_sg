@@ -88,6 +88,9 @@ function copyPluginAssets() {
 }
 
 export default defineConfig({
+  // Relative base so the built plugin works when opened from disk in Disguise Designer
+  // (file:// or from a plugin folder). Dev server works with base './' as well.
+  base: './',
   plugins: [
     vue(),
     designerPythonLoader(),

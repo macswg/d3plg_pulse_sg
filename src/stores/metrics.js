@@ -1,113 +1,135 @@
 import { reactive, computed } from 'vue'
 
-// Reactive metrics store
-const state = reactive({
-  // Current metric values
-  metrics: {
+const METRIC_KEYS = ['cpuLoad', 'gpuLoad', 'memoryUsage', 'fps', 'diskRead', 'diskWrite']
+
+function createEmptyMetrics() {
+  return {
     cpuLoad: 0,
     gpuLoad: 0,
     memoryUsage: 0,
     fps: 0,
     diskRead: 0,
     diskWrite: 0
-  },
-  
-  // History for charts (last 60 data points)
-  history: {
+  }
+}
+
+function createEmptyHistory() {
+  return {
     cpuLoad: [],
     gpuLoad: [],
     memoryUsage: [],
     fps: [],
     diskRead: [],
     diskWrite: []
-  },
-  
-  // Alert configurations
+  }
+}
+
+// Reactive metrics store
+const state = reactive({
+  // Per-machine data: { [machineId]: { id, name, hostname, isLocal, metrics, history } }
+  machines: {},
+  machineIds: [],
+
+  // Alert configurations (one per metric, applied to all machines)
   alerts: {
     cpuLoad: { enabled: false, warningThreshold: 80, criticalThreshold: 90 },
     gpuLoad: { enabled: false, warningThreshold: 80, criticalThreshold: 90 },
     memoryUsage: { enabled: false, warningThreshold: 4000, criticalThreshold: 8000 },
-    fps: { enabled: false, warningThreshold: 50, criticalThreshold: 30, comparison: 'less' }
+    fps: { enabled: false, warningThreshold: 50, criticalThreshold: 30, comparison: 'less' },
+    diskRead: { enabled: false, warningThreshold: 2500, criticalThreshold: 3000 },
+    diskWrite: { enabled: false, warningThreshold: 2500, criticalThreshold: 3000 }
   },
-  
-  // Active alerts
+
+  // Active alerts: each has machineId, machineName, metricKey, value, severity, message, timestamp
   activeAlerts: [],
-  
+
   // Connection status
   connected: false,
-  selectedMachine: null,
-  
+
+  // Session-wide playhead (Advanced tab)
+  playheadTRender: 0,
+
   // Max history length
   maxHistoryLength: 60
 })
 
-// Update a metric value and add to history
-function updateMetric(key, value) {
-  if (state.metrics[key] !== undefined) {
-    state.metrics[key] = value
-    
-    // Add to history with timestamp
-    const historyEntry = {
-      value,
-      timestamp: Date.now()
+// Set machine list from session API
+function setMachines(machinesList) {
+  const nextIds = []
+  const nextMachines = {}
+
+  for (const m of machinesList) {
+    const id = m.uid || m.id || m.hostname || String(Math.random())
+    nextIds.push(id)
+    nextMachines[id] = {
+      id,
+      name: m.name || m.hostname || id,
+      hostname: m.hostname || '',
+      isLocal: !!m.isLocal,
+      metrics: state.machines[id]?.metrics ? { ...state.machines[id].metrics } : createEmptyMetrics(),
+      history: state.machines[id]?.history ? { ...state.machines[id].history } : createEmptyHistory()
     }
-    
-    state.history[key].push(historyEntry)
-    
-    // Keep history within max length
-    if (state.history[key].length > state.maxHistoryLength) {
-      state.history[key].shift()
-    }
-    
-    // Check for alerts
-    checkAlert(key, value)
   }
+
+  state.machineIds = nextIds
+  state.machines = nextMachines
 }
 
-// Check if value triggers an alert
-function checkAlert(key, value) {
+// Update a metric value for a specific machine
+function updateMetric(machineId, key, value) {
+  const machine = state.machines[machineId]
+  if (!machine || !METRIC_KEYS.includes(key)) return
+
+  machine.metrics[key] = value
+
+  const historyEntry = { value, timestamp: Date.now() }
+  machine.history[key].push(historyEntry)
+  if (machine.history[key].length > state.maxHistoryLength) {
+    machine.history[key].shift()
+  }
+
+  checkAlert(machineId, machine.name, key, value)
+}
+
+// Check if value triggers an alert (per machine)
+function checkAlert(machineId, machineName, key, value) {
   const alertConfig = state.alerts[key]
   if (!alertConfig || !alertConfig.enabled) return
-  
+
   const comparison = alertConfig.comparison || 'greater'
   let severity = null
-  
+
   if (comparison === 'greater') {
-    if (value >= alertConfig.criticalThreshold) {
-      severity = 'critical'
-    } else if (value >= alertConfig.warningThreshold) {
-      severity = 'warning'
-    }
+    if (value >= alertConfig.criticalThreshold) severity = 'critical'
+    else if (value >= alertConfig.warningThreshold) severity = 'warning'
   } else {
-    // 'less' comparison (for FPS)
-    if (value <= alertConfig.criticalThreshold) {
-      severity = 'critical'
-    } else if (value <= alertConfig.warningThreshold) {
-      severity = 'warning'
-    }
+    if (value <= alertConfig.criticalThreshold) severity = 'critical'
+    else if (value <= alertConfig.warningThreshold) severity = 'warning'
   }
-  
+
   if (severity) {
-    addAlert(key, value, severity)
+    addAlert(machineId, machineName, key, value, severity)
   } else {
-    // Remove any existing alert for this metric
-    removeAlert(key)
+    removeAlert(machineId, key)
   }
 }
 
-// Add an alert
-function addAlert(metricKey, value, severity) {
-  const existingIndex = state.activeAlerts.findIndex(a => a.metricKey === metricKey)
-  
+// Add an alert (keyed by machineId + metricKey)
+function addAlert(machineId, machineName, metricKey, value, severity) {
+  const id = `${machineId}-${metricKey}`
+  const existingIndex = state.activeAlerts.findIndex(a => a.machineId === machineId && a.metricKey === metricKey)
+
   const alert = {
-    id: `${metricKey}-${Date.now()}`,
+    id: `${id}-${Date.now()}`,
+    machineId,
+    machineName,
     metricKey,
     value,
     severity,
     timestamp: Date.now(),
     message: `${formatMetricName(metricKey)} is ${severity}: ${value.toFixed(1)}${getMetricUnit(metricKey)}`
   }
-  
+
   if (existingIndex >= 0) {
     state.activeAlerts[existingIndex] = alert
   } else {
@@ -115,12 +137,10 @@ function addAlert(metricKey, value, severity) {
   }
 }
 
-// Remove an alert
-function removeAlert(metricKey) {
-  const index = state.activeAlerts.findIndex(a => a.metricKey === metricKey)
-  if (index >= 0) {
-    state.activeAlerts.splice(index, 1)
-  }
+// Remove an alert for a (machine, metric)
+function removeAlert(machineId, metricKey) {
+  const index = state.activeAlerts.findIndex(a => a.machineId === machineId && a.metricKey === metricKey)
+  if (index >= 0) state.activeAlerts.splice(index, 1)
 }
 
 // Update alert configuration
@@ -135,15 +155,16 @@ function setConnected(connected) {
   state.connected = connected
 }
 
-// Set selected machine
-function setSelectedMachine(machine) {
-  state.selectedMachine = machine
+// Set session-wide playhead (for Advanced tab)
+function setPlayheadTRender(value) {
+  state.playheadTRender = value
 }
 
-// Clear all history
+// Clear all history (all machines)
 function clearHistory() {
-  Object.keys(state.history).forEach(key => {
-    state.history[key] = []
+  state.machineIds.forEach(id => {
+    const m = state.machines[id]
+    if (m) METRIC_KEYS.forEach(key => { m.history[key] = [] })
   })
 }
 
@@ -174,23 +195,32 @@ function getMetricUnit(key) {
 
 // Computed getters
 const getters = {
-  currentMetrics: computed(() => state.metrics),
-  metricHistory: computed(() => state.history),
+  machines: computed(() => state.machines),
+  machineIds: computed(() => state.machineIds),
   alertConfigs: computed(() => state.alerts),
   activeAlerts: computed(() => state.activeAlerts),
   isConnected: computed(() => state.connected),
-  selectedMachine: computed(() => state.selectedMachine),
-  alertCount: computed(() => state.activeAlerts.length)
+  playheadTRender: computed(() => state.playheadTRender),
+  alertCount: computed(() => state.activeAlerts.length),
+  // Backward compat: first machine's metrics/history for any single-machine UI
+  currentMetrics: computed(() => {
+    const id = state.machineIds[0]
+    return id && state.machines[id] ? state.machines[id].metrics : createEmptyMetrics()
+  }),
+  metricHistory: computed(() => {
+    const id = state.machineIds[0]
+    return id && state.machines[id] ? state.machines[id].history : createEmptyHistory()
+  })
 }
 
-// Export store
 export const useMetricsStore = () => ({
   state,
   ...getters,
+  setMachines,
   updateMetric,
   updateAlertConfig,
   setConnected,
-  setSelectedMachine,
+  setPlayheadTRender,
   clearHistory,
   formatMetricName,
   getMetricUnit,
