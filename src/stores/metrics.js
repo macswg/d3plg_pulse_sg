@@ -64,6 +64,7 @@ function setMachines(machinesList) {
   for (const m of machinesList) {
     const id = m.uid || m.id || m.hostname || String(Math.random())
     nextIds.push(id)
+    const prev = state.machines[id]
     // Hostname for Live Update findRemoteMonitor: director expects nodeName (d3 API); API may also use hostname, address, ip
     const hostname = (m.nodeName || m.hostname || m.address || m.ip || m.IP_address || '').toString().trim()
     nextMachines[id] = {
@@ -72,10 +73,10 @@ function setMachines(machinesList) {
       hostname: hostname || '',
       isLocal: !!m.isLocal,
       httpPort: m.httpPort ?? 80,
-      memoryMax: state.machines[id]?.memoryMax ?? 0,
-      metricLastUpdateAt: state.machines[id]?.metricLastUpdateAt ? { ...state.machines[id].metricLastUpdateAt } : {},
-      metrics: state.machines[id]?.metrics ? { ...state.machines[id].metrics } : createEmptyMetrics(),
-      history: state.machines[id]?.history ? { ...state.machines[id].history } : createEmptyHistory()
+      memoryMax: prev?.memoryMax ?? 0,
+      metricLastUpdateAt: prev?.metricLastUpdateAt ? { ...prev.metricLastUpdateAt } : {},
+      metrics: prev?.metrics ? { ...prev.metrics } : createEmptyMetrics(),
+      history: prev?.history ? { ...prev.history } : createEmptyHistory()
     }
   }
 

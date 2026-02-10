@@ -333,6 +333,25 @@ function objectPathLocal(monitorName) {
 watch(
   () => store.machineIds.value,
   (ids) => {
+    const currentIds = new Set(ids || [])
+    // Clean up director subscriptions for machine IDs no longer in the list
+    const allSubKeys = new Set([
+      ...Object.keys(overviewSubscriptions),
+      ...Object.keys(advancedSubscriptions)
+    ])
+    for (const machineId of allSubKeys) {
+      if (currentIds.has(machineId)) continue
+      const ov = overviewSubscriptions[machineId]
+      if (ov) {
+        Object.values(ov).forEach((sub) => typeof sub?.unsubscribe === 'function' && sub.unsubscribe())
+        delete overviewSubscriptions[machineId]
+      }
+      const adv = advancedSubscriptions[machineId]
+      if (adv) {
+        Object.values(adv).forEach((sub) => typeof sub?.unsubscribe === 'function' && sub.unsubscribe())
+        delete advancedSubscriptions[machineId]
+      }
+    }
     if (!ids || ids.length === 0) return
     for (const machineId of ids) {
       if (overviewSubscriptions[machineId]) continue
@@ -504,7 +523,12 @@ async function fetchSession() {
         ...understudies.map(u => ({ ...u, uid: u?.uid || u?.hostname, isLocal: false }))
       ]
     }
-    store.setMachines(list)
+    const newIds = list.map((m) => m.uid || m.id || m.hostname || '').filter(Boolean)
+    const currentIds = store.machineIds.value || []
+    const same =
+      newIds.length === currentIds.length &&
+      newIds.every((id, i) => id === currentIds[i])
+    if (!same) store.setMachines(list)
   } catch (error) {
     console.warn('Failed to fetch session:', error.message)
   }
@@ -523,7 +547,10 @@ async function fetchHealthMetrics() {
   }
 }
 
+const SESSION_POLL_MS = 10_000
+
 let healthPollInterval = null
+let sessionPollInterval = null
 
 function getPollMs() {
   return config.updateRateMs > 0 ? config.updateRateMs : 500
@@ -534,6 +561,7 @@ function startIntervals() {
   const ms = getPollMs()
   healthPollInterval = setInterval(fetchHealthMetrics, ms)
   metricsPollInterval = setInterval(pollMetricRefs, ms)
+  sessionPollInterval = setInterval(fetchSession, SESSION_POLL_MS)
 }
 
 function stopIntervals() {
@@ -544,6 +572,10 @@ function stopIntervals() {
   if (metricsPollInterval) {
     clearInterval(metricsPollInterval)
     metricsPollInterval = null
+  }
+  if (sessionPollInterval) {
+    clearInterval(sessionPollInterval)
+    sessionPollInterval = null
   }
 }
 
