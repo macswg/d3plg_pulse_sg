@@ -2,8 +2,6 @@ import { reactive, computed } from 'vue'
 
 const METRIC_KEYS = ['cpuLoad', 'gpuLoad', 'memoryUsage', 'fps', 'diskRead', 'diskWrite']
 const METRIC_KEYS_SET = new Set(METRIC_KEYS)
-// Overview metrics: machine is "stale" only when all of these have had no update for 5s (avoids one stuck value keeping it live)
-const OVERVIEW_METRIC_KEYS = ['cpuLoad', 'gpuLoad', 'memoryUsage', 'fps']
 
 function createEmptyMetrics() {
   return {
@@ -117,14 +115,18 @@ function updateMetric(machineId, key, value) {
   if (!machine.metricLastUpdateAt) machine.metricLastUpdateAt = {}
   machine.metricLastUpdateAt[key] = now
 
-  const historyEntry = { value, timestamp: now }
-  machine.history[key].push(historyEntry)
+  const history = machine.history[key]
+  history.push({ value, timestamp: now })
+
+  // Prune old entries efficiently with a single slice
   const fiveSecondsAgo = now - 5000
-  while (machine.history[key].length > 0 && machine.history[key][0].timestamp < fiveSecondsAgo) {
-    machine.history[key].shift()
+  let pruneIndex = 0
+  while (pruneIndex < history.length && history[pruneIndex].timestamp < fiveSecondsAgo) {
+    pruneIndex++
   }
-  if (machine.history[key].length > state.maxHistoryLength) {
-    machine.history[key].shift()
+  if (pruneIndex > 0 || history.length > state.maxHistoryLength) {
+    const start = Math.max(pruneIndex, history.length - state.maxHistoryLength)
+    machine.history[key] = history.slice(start)
   }
 
   checkAlert(machineId, machine.name, key, value)

@@ -48,7 +48,6 @@
             v-for="machineId in machineIds"
             :key="machineId"
             class="machine-section"
-            :class="{ 'machine-section--stale': staleMachineIds[machineId] }"
           >
             <h2 class="machine-section-title">
               {{ machines[machineId]?.name || machineId }}
@@ -107,7 +106,6 @@
             v-for="machineId in machineIds"
             :key="machineId"
             class="machine-section"
-            :class="{ 'machine-section--stale': staleMachineIds[machineId] }"
           >
             <h2 class="machine-section-title">
               {{ machines[machineId]?.name || machineId }}
@@ -177,7 +175,6 @@
       :machine="machines[id]"
       :director-endpoint="directorEndpoint"
       :update-rate-ms="config.updateRateMs > 0 ? config.updateRateMs : 500"
-      :is-stale="!!staleMachineIds[id]"
     />
   </div>
 </template>
@@ -291,35 +288,6 @@ const alertConfigs = computed(() => store.alertConfigs.value)
 const alertCount = computed(() => store.alertCount.value)
 const isConnected = computed(() => store.isConnected.value)
 
-// Stale machines: all overview metrics (cpu, gpu, memory, fps) silent for 5s (one stuck value can't keep it live)
-const staleTick = ref(0)
-const OVERVIEW_KEYS = ['cpuLoad', 'gpuLoad', 'memoryUsage', 'fps']
-const staleMachineIds = computed(() => {
-  staleTick.value // force dependency so computed re-runs on interval and when metrics change
-  const now = Date.now()
-  const ids = store.machineIds.value || []
-  const mach = store.machines.value
-  const stale = {}
-  for (const id of ids) {
-    const m = mach[id]
-    if (!m) continue
-    const lastByKey = m.metricLastUpdateAt || {}
-    const oldest = Math.min(...OVERVIEW_KEYS.map(k => lastByKey[k] || 0))
-    if (oldest === 0 || (now - oldest > 5000)) stale[id] = true
-  }
-  return stale
-})
-
-// When any machine receives new overview data, re-run stale check so "stale" clears immediately when machine comes back
-watch(
-  () => (store.machineIds.value || []).map(id => {
-    const m = store.machines.value[id]
-    const last = m?.metricLastUpdateAt || {}
-    return OVERVIEW_KEYS.map(k => last[k] || 0).join(',')
-  }).join('|'),
-  () => { staleTick.value++ }
-)
-
 // Per-machine subscription refs (Overview: fps, cpu, gpu, memory; Advanced: diskRead, diskWrite)
 const overviewSubscriptions = reactive({})
 const advancedSubscriptions = reactive({})
@@ -390,73 +358,27 @@ watch(
       pushOv(adv.diskWrite, 'diskWrite')
     }
   },
-  { immediate: true, deep: true }
+  { immediate: true }
 )
+
+// Helper to freeze/thaw all subscriptions in an object
+function forEachSub(subs, action) {
+  Object.values(subs).forEach(sub => sub?.[action]?.())
+}
 
 // Freeze/thaw tab subscriptions: Overview (fps, cpu, gpu, mem); Advanced (disk only)
 watch(activeTab, (newTab, oldTab) => {
   if (newTab === 'overview') {
-    Object.values(overviewSubscriptions).forEach(s => {
-      s?.fps?.thaw?.()
-      s?.cpuLoad?.thaw?.()
-      s?.gpuLoad?.thaw?.()
-      s?.memoryUsage?.thaw?.()
-    })
+    Object.values(overviewSubscriptions).forEach(s => forEachSub(s, 'thaw'))
   } else if (oldTab === 'overview') {
-    Object.values(overviewSubscriptions).forEach(s => {
-      s?.fps?.freeze?.()
-      s?.cpuLoad?.freeze?.()
-      s?.gpuLoad?.freeze?.()
-      s?.memoryUsage?.freeze?.()
-    })
+    Object.values(overviewSubscriptions).forEach(s => forEachSub(s, 'freeze'))
   }
   if (newTab === 'advanced') {
-    Object.values(advancedSubscriptions).forEach(s => {
-      s?.diskRead?.thaw?.()
-      s?.diskWrite?.thaw?.()
-    })
+    Object.values(advancedSubscriptions).forEach(s => forEachSub(s, 'thaw'))
   } else if (oldTab === 'advanced') {
-    Object.values(advancedSubscriptions).forEach(s => {
-      s?.diskRead?.freeze?.()
-      s?.diskWrite?.freeze?.()
-    })
+    Object.values(advancedSubscriptions).forEach(s => forEachSub(s, 'freeze'))
   }
 }, { immediate: true })
-
-// Freeze/thaw director (local machine) subscriptions when stale status changes
-watch(staleMachineIds, (staleMap, oldStaleMap) => {
-  const ids = store.machineIds.value || []
-  for (const machineId of ids) {
-    const machine = store.machines.value[machineId]
-    if (!machine?.isLocal) continue
-
-    const isStale = !!staleMap[machineId]
-    const wasStale = !!(oldStaleMap && oldStaleMap[machineId])
-
-    if (isStale && !wasStale) {
-      // Freeze director subscriptions
-      const ov = overviewSubscriptions[machineId]
-      const adv = advancedSubscriptions[machineId]
-      ov?.fps?.freeze?.()
-      ov?.cpuLoad?.freeze?.()
-      ov?.gpuLoad?.freeze?.()
-      ov?.memoryUsage?.freeze?.()
-      adv?.diskRead?.freeze?.()
-      adv?.diskWrite?.freeze?.()
-    } else if (!isStale && wasStale) {
-      // Thaw director subscriptions
-      const ov = overviewSubscriptions[machineId]
-      const adv = advancedSubscriptions[machineId]
-      ov?.fps?.thaw?.()
-      ov?.cpuLoad?.thaw?.()
-      ov?.gpuLoad?.thaw?.()
-      ov?.memoryUsage?.thaw?.()
-      adv?.diskRead?.thaw?.()
-      adv?.diskWrite?.thaw?.()
-      liveUpdate.reconnect()
-    }
-  }
-}, { deep: true })
 
 // Read subscription value (library may expose number or { value } ref)
 function readSubValue(raw) {
@@ -547,10 +469,7 @@ async function fetchHealthMetrics() {
   }
 }
 
-const SESSION_POLL_MS = 10_000
-
 let healthPollInterval = null
-let sessionPollInterval = null
 
 function getPollMs() {
   return config.updateRateMs > 0 ? config.updateRateMs : 500
@@ -561,7 +480,6 @@ function startIntervals() {
   const ms = getPollMs()
   healthPollInterval = setInterval(fetchHealthMetrics, ms)
   metricsPollInterval = setInterval(pollMetricRefs, ms)
-  sessionPollInterval = setInterval(fetchSession, SESSION_POLL_MS)
 }
 
 function stopIntervals() {
@@ -573,10 +491,6 @@ function stopIntervals() {
     clearInterval(metricsPollInterval)
     metricsPollInterval = null
   }
-  if (sessionPollInterval) {
-    clearInterval(sessionPollInterval)
-    sessionPollInterval = null
-  }
 }
 
 function onVisibilityChange() {
@@ -584,7 +498,6 @@ function onVisibilityChange() {
   else stopIntervals()
 }
 
-let staleCheckInterval = null
 onMounted(() => {
   store.setUpdateRate(config.updateRateMs)
   liveUpdate.reconnect()
@@ -592,14 +505,12 @@ onMounted(() => {
   fetchHealthMetrics()
   startIntervals()
   document.addEventListener('visibilitychange', onVisibilityChange)
-  staleCheckInterval = setInterval(() => { staleTick.value++ }, 5000)
 })
 
 // Cleanup on unmount
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
   stopIntervals()
-  if (staleCheckInterval) clearInterval(staleCheckInterval)
 })
 
 // Actions
@@ -831,18 +742,6 @@ body {
 
 .machine-section:last-child {
   border-bottom: none;
-}
-
-.machine-section--stale {
-  background: rgba(255, 82, 82, 0.15);
-  border-radius: 8px;
-  padding: 12px 12px 16px 12px;
-  margin: 0 0 20px 0;
-  border-bottom: none;
-}
-
-.machine-section--stale:last-child {
-  margin-bottom: 0;
 }
 
 .machine-section-title {
