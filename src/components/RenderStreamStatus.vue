@@ -94,6 +94,21 @@
             <li v-for="(e, i) in getAssetErrors(layer.uid)" :key="i">{{ e }}</li>
           </ul>
         </div>
+
+        <!-- Debug panel -->
+        <details class="rs-debug">
+          <summary>Debug</summary>
+          <div class="rs-debug-block">
+            <div class="rs-debug-label">Layer UID</div>
+            <pre>{{ layer.uid }}</pre>
+            <div class="rs-debug-label">Workload UID (from layerstatus)</div>
+            <pre>{{ layerStatuses[layer.uid]?.workload?.uid ?? '—' }}</pre>
+            <div class="rs-debug-label">Streams (REST)</div>
+            <pre>{{ JSON.stringify(layerStatuses[layer.uid]?.streams?.map(s => ({ uid: s.uid, name: s.name, source: s.sourceMachine, receiver: s.receiverMachine })) ?? [], null, 2) }}</pre>
+            <div class="rs-debug-label">Stream Receive Statuses (Live Update)</div>
+            <pre>{{ JSON.stringify(statusLists[layer.uid] ?? null, null, 2) }}</pre>
+          </div>
+        </details>
       </section>
     </template>
   </div>
