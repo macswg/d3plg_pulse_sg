@@ -13,7 +13,7 @@ services:
     environment:
       - VITE_PORT=5173
       - DOCKER=true
-      - VITE_DIRECTOR=10.241.128.36:80
+      - VITE_DIRECTOR=10.241.131.36:80
     tty: true
     stdin_open: true
 
