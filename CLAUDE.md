@@ -71,6 +71,10 @@ Monitor names: `fps`, `Machine` (CPU/GPU), `ProcessMemory`, `Disk`
 - Alert evaluation runs on each metric update (warning/critical thresholds)
 - "Stale" detection: machine marked stale if all overview metrics silent for 5s
 
+## References
+
+- [Disguise Live Update API](https://developer.disguise.one/api/session/liveupdate/) - Official API docs for the Live Update WebSocket system
+
 ## Dependencies
 
 - `@disguise-one/vue-liveupdate` - Real-time data subscriptions to d3

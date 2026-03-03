@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "mcp__MCP_DOCKER__fetch_content",
+      "mcp__MCP_DOCKER__browser_navigate",
+      "Bash(docker compose:*)",
+      "WebFetch(domain:developer.disguise.one)"
     ]
   }
 }
