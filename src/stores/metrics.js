@@ -115,20 +115,6 @@ function updateMetric(machineId, key, value) {
   if (!machine.metricLastUpdateAt) machine.metricLastUpdateAt = {}
   machine.metricLastUpdateAt[key] = now
 
-  const history = machine.history[key]
-  history.push({ value, timestamp: now })
-
-  // Prune old entries efficiently with a single slice
-  const fiveSecondsAgo = now - 5000
-  let pruneIndex = 0
-  while (pruneIndex < history.length && history[pruneIndex].timestamp < fiveSecondsAgo) {
-    pruneIndex++
-  }
-  if (pruneIndex > 0 || history.length > state.maxHistoryLength) {
-    const start = Math.max(pruneIndex, history.length - state.maxHistoryLength)
-    machine.history[key] = history.slice(start)
-  }
-
   checkAlert(machineId, machine.name, key, value)
 }
 

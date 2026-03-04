@@ -55,6 +55,15 @@
             </h2>
             <div class="metrics-grid">
               <MetricCard
+                title="Frame Rate"
+                :value="machines[machineId]?.metrics?.fps ?? 0"
+                unit="FPS"
+                :history="machines[machineId]?.history?.fps ?? []"
+                :thresholds="{ warning: 50, critical: 30 }"
+                :alertConfig="{ ...alertConfigs.fps, comparison: 'less' }"
+                @configure="openAlertConfig('fps')"
+              />
+              <MetricCard
                 title="CPU Load"
                 :value="machines[machineId]?.metrics?.cpuLoad ?? 0"
                 unit="%"
@@ -73,24 +82,17 @@
                 @configure="openAlertConfig('gpuLoad')"
               />
               <MetricCard
+                class="memory-card"
+                :small="true"
                 title="Memory Usage"
                 :value="machines[machineId]?.metrics?.memoryUsage ?? 0"
                 :value-max="machines[machineId]?.memoryMax ?? 0"
                 unit="MB"
                 :decimals="0"
                 :history="[]"
-                :thresholds="{ warning: 4000, critical: 8000 }"
+                :thresholds="{ warning: 40000, critical: 80000 }"
                 :alertConfig="alertConfigs.memoryUsage"
                 @configure="openAlertConfig('memoryUsage')"
-              />
-              <MetricCard
-                title="Frame Rate"
-                :value="machines[machineId]?.metrics?.fps ?? 0"
-                unit="FPS"
-                :history="machines[machineId]?.history?.fps ?? []"
-                :thresholds="{ warning: 50, critical: 30 }"
-                :alertConfig="{ ...alertConfigs.fps, comparison: 'less' }"
-                @configure="openAlertConfig('fps')"
               />
             </div>
           </section>
@@ -145,6 +147,37 @@
         :api-base-url="apiBaseUrl"
       />
 
+      <!-- RS Graphs Tab -->
+      <RenderStreamGraphs
+        v-show="activeTab === 'rs-graphs'"
+        :director-endpoint="directorEndpoint"
+        :api-base-url="apiBaseUrl"
+      />
+
+      <!-- Notifications Tab -->
+      <div v-if="activeTab === 'notifications'" class="tab-content">
+        <div class="tab-content-header">
+          <h1>Notifications</h1>
+          <button class="notif-fetch-btn" @click="fetchNotifications" :disabled="notifLoading">
+            {{ notifLoading ? 'Loading...' : 'Fetch Notifications' }}
+          </button>
+        </div>
+        <div v-if="notifError" class="notif-error">{{ notifError }}</div>
+        <div v-else-if="notifGroups === null" class="loading-state">Press the button to load notifications.</div>
+        <div v-else-if="notifGroups.length === 0" class="loading-state">No notifications found.</div>
+        <div v-else class="notif-groups">
+          <div v-for="group in notifGroups" :key="group.machine?.uid" class="notif-group">
+            <div class="notif-machine-header">{{ group.machine?.hostname ?? group.machine?.name }}</div>
+            <div class="notif-list">
+              <div v-for="(n, i) in group.notifications" :key="i" class="notif-card">
+                <div class="notif-summary">{{ n.summary }}</div>
+                <pre v-if="n.detail && n.detail.trim()" class="notif-detail">{{ n.detail.trim() }}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Settings Tab: API config -->
       <div v-if="activeTab === 'settings'" class="tab-content">
         <h1>API &amp; Update Config</h1>
@@ -193,6 +226,7 @@ import MetricCard from './components/MetricCard.vue'
 import AlertManager from './components/AlertManager.vue'
 import MachineLiveUpdate from './components/MachineLiveUpdate.vue'
 import RenderStreamStatus from './components/RenderStreamStatus.vue'
+import RenderStreamGraphs from './components/RenderStreamGraphs.vue'
 import { useMetricsStore } from './stores/metrics'
 
 // API config: load from localStorage or derive from URL/env
@@ -239,6 +273,27 @@ const store = useMetricsStore()
 
 // UI State
 const activeTab = ref('overview')
+
+// Notifications
+const notifGroups = ref(null)
+const notifLoading = ref(false)
+const notifError = ref(null)
+
+async function fetchNotifications() {
+  notifLoading.value = true
+  notifError.value = null
+  try {
+    const res = await fetch(`${apiBaseUrl.value}/api/session/status/notifications`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    const list = data?.result ?? (Array.isArray(data) ? data : [data])
+    notifGroups.value = list.filter(item => item?.notifications?.length > 0)
+  } catch (err) {
+    notifError.value = `Failed to load notifications: ${err.message}`
+  } finally {
+    notifLoading.value = false
+  }
+}
 const sidebarCollapsed = ref(false)
 const configSaved = ref(false)
 
@@ -285,6 +340,16 @@ const tabs = [
     id: 'renderstream',
     label: 'RenderStream',
     icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 12 17 16 21"/><line x1="2" y1="10" x2="22" y2="10"/></svg>'
+  },
+  {
+    id: 'rs-graphs',
+    label: 'RS Graphs',
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>'
+  },
+  {
+    id: 'notifications',
+    label: 'Notifications',
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path><line x1="12" y1="2" x2="12" y2="4"/></svg>'
   },
   {
     id: 'settings',
@@ -778,7 +843,79 @@ body {
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 10px;
   margin-bottom: 12px;
-  align-items: start;
+
+  align-items: stretch;
+}
+
+
+
+/* Notifications tab */
+.notif-fetch-btn {
+  background: #2A2A2A;
+  border: 1px solid #444;
+  color: #CCC;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+.notif-fetch-btn:hover:not(:disabled) { background: #333; }
+.notif-fetch-btn:disabled { opacity: 0.5; cursor: default; }
+
+.notif-error { color: #FF5252; padding: 12px 0; }
+
+.notif-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.notif-group {}
+
+.notif-machine-header {
+  font-size: 14px;
+  font-weight: 700;
+  color: #6BFFDC;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 8px;
+}
+
+.notif-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.notif-card {
+  background: #1E1E1E;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.notif-summary {
+  font-size: 14px;
+  font-weight: 600;
+  color: #DDD;
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+
+.notif-detail {
+  font-family: monospace;
+  font-size: 12px;
+  color: #888;
+  background: #161616;
+  border: 1px solid #2A2A2A;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
 }
 
 /* Settings tab */
