@@ -1,15 +1,12 @@
 <template>
-  <div class="metric-card" :class="alertClass" @click="$emit('click')">
+  <div class="metric-card" :class="[alertClass, { 'metric-card--small': small }]" @click="$emit('click')">
     <div class="metric-header">
       <div class="metric-header-top">
         <div class="metric-header-row">
           <h3 class="metric-title">{{ title }}</h3>
-          <div v-if="!valueBelowTitle" class="metric-value" :style="{ color: valueColor }">
+          <div class="metric-value" :style="{ color: valueColor }">
             {{ formattedValue }} <span class="metric-unit">{{ unit }}</span>
           </div>
-        </div>
-        <div v-if="valueBelowTitle" class="metric-value-below" :style="{ color: valueColor }">
-          {{ formattedValue }} <span class="metric-unit">{{ unit }}</span>
         </div>
       </div>
       <button class="settings-btn" @click.stop="$emit('configure')" title="Configure alerts">
@@ -20,11 +17,6 @@
       </button>
     </div>
     
-    <div v-if="!valueBelowTitle" class="metric-body">
-      <div class="metric-chart">
-        <Line v-if="chartData" :data="chartData" :options="chartOptions" />
-      </div>
-    </div>
   </div>
 </template>
 
@@ -51,13 +43,11 @@ const props = defineProps({
   decimals: { type: Number, default: 1 },
   history: { type: Array, default: () => [] },
   thresholds: { type: Object, default: null },
-  alertConfig: { type: Object, default: null }
+  alertConfig: { type: Object, default: null },
+  small: { type: Boolean, default: false }
 })
 
 defineEmits(['click', 'configure'])
-
-// Show value below title when valueMax is provided (e.g., Memory Usage "used / max")
-const valueBelowTitle = computed(() => props.valueMax != null && props.valueMax > 0)
 
 // Format the current value (or "used / max" when valueMax is set)
 const formattedValue = computed(() => {
@@ -184,6 +174,13 @@ const chartOptions = {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 6px;
+  min-width: 0;
+}
+
+.metric-header-top {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
 }
 
 .metric-header-row {
@@ -237,12 +234,13 @@ const chartOptions = {
   opacity: 0.7;
 }
 
-.metric-value-below {
-  font-size: 20px;
-  font-weight: 600;
-  white-space: nowrap;
-  margin-top: 4px;
-  padding-bottom: 20px;
+
+.metric-card--small .metric-title {
+  font-size: 15px;
+}
+
+.metric-card--small .metric-value {
+  font-size: 15px;
 }
 
 .metric-chart {

@@ -13,13 +13,15 @@ services:
     # Ensure host.docker.internal resolves (needed on Linux; Docker Desktop adds it on Windows)
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Optional per-machine overrides (e.g. VITE_DIRECTOR=<director-ip>:80). Missing file is fine.
+    env_file:
+      - path: .env.local
+        required: false
     environment:
       - VITE_PORT=5173
       - DOCKER=true
-      # For local Designer: use localhost so proxy mode activates (proxy forwards to VITE_PROXY_TARGET)
-      # For remote: use the director IP, e.g. VITE_DIRECTOR=<director-ip>:80
-      - VITE_DIRECTOR=localhost:80
       # Container reaches host via host.docker.internal. Run designer-proxy on host to forward to Designer.
+      # Director resolution: ?director= URL param > VITE_DIRECTOR (.env.local) > localhost:80 default.
       - VITE_PROXY_TARGET=http://host.docker.internal:18080
     tty: true
     stdin_open: true
