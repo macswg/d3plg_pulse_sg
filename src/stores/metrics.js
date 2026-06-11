@@ -51,7 +51,7 @@ const state = reactive({
   maxHistoryLength: 100,
 
   // Update rate (ms): 0 = no throttling, 1–5000 = min interval between metric updates
-  updateRateMs: 10
+  updateRateMs: 250
 })
 
 // Set machine list from session API
@@ -96,7 +96,7 @@ const lastUpdateAt = {}
 
 // Set update rate (0 = no throttling, 1–5000 = min ms between updates)
 function setUpdateRate(ms) {
-  const n = typeof ms === 'number' ? Math.max(0, Math.min(5000, ms)) : 10
+  const n = typeof ms === 'number' ? Math.max(0, Math.min(5000, ms)) : 250
   state.updateRateMs = n
 }
 

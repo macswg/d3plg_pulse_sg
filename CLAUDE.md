@@ -41,16 +41,16 @@ For Docker builds targeting host paths, create `docker-compose.override.yml` wit
 ## Architecture
 
 ### Data Flow
-1. **Session fetch**: `GET /api/session/status/session` retrieves machine list (director + actors + understudies)
-2. **Live Update (WebSocket)**: Real-time metrics via `@disguise-one/vue-liveupdate`
-   - Director (local): `findLocalMonitor(monitorName)`
-   - Actors/understudies: `findRemoteMonitor(hostname, monitorName)`
-3. **Polling fallback**: 500ms interval polls subscription refs (library may not be Vue-reactive)
+1. **Session fetch**: `GET /api/session/status/session` retrieves machine list (director + actors + understudies). Re-polled slowly (10s) only to detect machines joining/leaving — never for metrics.
+2. **Live Update (WebSocket)**: Real-time metrics via `@disguise-one/vue-liveupdate`. A **single** connection to the director serves every machine in the session — the director aggregates remote machines' monitors, so there is no per-machine socket.
+   - Director (local): `findLocalMonitor("<monitor>")`
+   - Actors/understudies: `findRemoteMonitor("<hostname>:d3", "<monitor>")`
+3. **No polling of metrics**: the library's subscription values are reactive `computed` refs, so a `watch` pushes each change into the store. Connection status comes from `liveUpdate.status` (no REST `/health` poll).
+4. **Visibility gating**: when the page is hidden, all subscriptions are frozen (unsubscribed on the director side) so an unwatched monitor puts ~zero load on the Disguise servers; thawed on return.
 
 ### Key Files
-- `src/App.vue` - Main app: session fetch, Live Update subscriptions, tab management
+- `src/App.vue` - Main app: single director Live Update connection, all-machine subscriptions, session fetch, tab management
 - `src/stores/metrics.js` - Reactive store: per-machine metrics/history, alert configuration, throttling
-- `src/components/MachineLiveUpdate.vue` - Per-machine WebSocket connections for remote machines
 - `src/components/MetricCard.vue` - Metric display with sparkline and threshold coloring
 - `src/director.js` - Director endpoint resolution from URL params, env vars, or defaults
 
@@ -59,8 +59,8 @@ For Docker builds targeting host paths, create `docker-compose.override.yml` wit
 // Local machine (director)
 `subsystem:MonitoringManager.findLocalMonitor("${monitorName}")`
 
-// Remote machines (actors/understudies)
-`subsystem:MonitoringManager.findRemoteMonitor("${hostname}", "${monitorName}")`
+// Remote machines (actors/understudies) — note the ":d3" node-name suffix
+`subsystem:MonitoringManager.findRemoteMonitor("${hostname}:d3", "${monitorName}")`
 ```
 
 Monitor names: `fps`, `Machine` (CPU/GPU), `ProcessMemory`, `Disk`

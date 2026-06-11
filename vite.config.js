@@ -2,7 +2,25 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { designerPythonLoader } from '@disguise-one/designer-pythonapi/vite-loader'
 import { existsSync, mkdirSync, readFileSync, copyFileSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 import path from 'node:path'
+
+// Version info shown in the UI: package.json version + git short hash, so any
+// build (even at 0.0.0) is uniquely identifiable. Git may be unavailable in some
+// build environments, so fall back gracefully.
+const pkg = JSON.parse(readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf-8'))
+function gitShortHash() {
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+  } catch {
+    return ''
+  }
+}
+const APP_VERSION = pkg.version ?? '0.0.0'
+const GIT_COMMIT = gitShortHash()
+
+// Dev server port: override with PORT=<n> (keeps HMR pointed at the same port).
+const devPort = Number(process.env.PORT) || 5173
 
 const BUILD_TARGET_FILE = process.env.BUILD_TARGET_FILE ?? '.build-target'
 const BUILD_TARGET_LOCAL_FILE = '.build-target.local'
@@ -102,23 +120,36 @@ export default defineConfig({
   // Relative base so the built plugin works when opened from disk in Disguise Designer
   // (file:// or from a plugin folder). Dev server works with base './' as well.
   base: './',
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+    __GIT_COMMIT__: JSON.stringify(GIT_COMMIT),
+  },
   plugins: [
     vue(),
     designerPythonLoader(),
     copyPluginAssets()
   ],
   server: {
-    port: 5173,
+    port: devPort,
     host: '0.0.0.0', // Allow external connections (needed for Docker)
+    // Proxy /api to local Designer when using dev server with localhost director (avoids CORS)
+    // In Docker, use host.docker.internal to reach Designer on the host machine
+    proxy: {
+      '/api': {
+        target: process.env.VITE_PROXY_TARGET ?? (isDocker ? 'http://host.docker.internal:80' : 'http://localhost:80'),
+        changeOrigin: true,
+        ws: true, // WebSocket for Live Update at /api/session/liveupdate
+      },
+    },
     watch: {
       // Use polling in Docker (especially needed on Windows), native watching otherwise
       usePolling: isDocker,
       interval: isDocker ? 1000 : undefined, // Polling interval only when polling is enabled
     },
     hmr: {
-      port: 5173,
+      port: devPort,
       host: 'localhost', // HMR host - browser connects to localhost
-      clientPort: 5173, // Port the client connects to
+      clientPort: devPort, // Port the client connects to
     },
   },
   build: {
