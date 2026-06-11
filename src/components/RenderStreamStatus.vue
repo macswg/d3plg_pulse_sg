@@ -25,6 +25,7 @@
               <tr>
                 <th>Machine</th>
                 <th>State</th>
+                <th v-if="hasLiveInstances(layer.uid)">Load</th>
                 <th>Health</th>
                 <th>Details</th>
               </tr>
@@ -37,6 +38,15 @@
               >
                 <td>{{ inst.machineName || inst.machineUid || '—' }}</td>
                 <td><span class="rs-badge" :class="instanceBadgeClass(inst)">{{ inst.state || '—' }}</span></td>
+                <td v-if="hasLiveInstances(layer.uid)" class="rs-flags-cell">
+                  <span
+                    v-for="(f, fi) in instanceFlags(inst)"
+                    :key="fi"
+                    class="rs-badge"
+                    :class="f.cls"
+                  >{{ f.label }}</span>
+                  <span v-if="instanceFlags(inst).length === 0">—</span>
+                </td>
                 <td :class="{ 'rs-warn': inst.healthMessage && !isErrorState(inst) }">{{ inst.healthMessage || '—' }}</td>
                 <td class="rs-error-cell">{{ inst.healthDetails || '—' }}</td>
               </tr>
@@ -54,11 +64,14 @@
                 <th>Stream</th>
                 <th>Source → Receiver</th>
                 <th>Subscribed</th>
-                <th v-if="hasLiveUpdateStreams(layer.uid)">Latency (ms)</th>
-                <th v-if="hasLiveUpdateStreams(layer.uid)">Frames Recv'd</th>
-                <th v-if="hasLiveUpdateStreams(layer.uid)">Frames Sent</th>
+                <template v-if="hasLiveUpdateStreams(layer.uid)">
+                  <th>Latency (ms)</th>
+                  <th>Frames Recv'd</th>
+                  <th>Frames Sent</th>
+                  <th>Dropped</th>
+                </template>
                 <th v-else>Status</th>
-                <th v-if="!hasLiveUpdateStreams(layer.uid)">Last Error</th>
+                <th>Last Error</th>
               </tr>
             </thead>
             <tbody>
@@ -75,12 +88,11 @@
                   <td :class="{ 'rs-warn': isHighLatency(s) }">{{ s.activeLatency != null ? s.activeLatency : '—' }}</td>
                   <td>{{ s.recentReceived ?? '—' }}</td>
                   <td>{{ s.recentSent ?? '—' }}</td>
+                  <td :class="{ 'rs-error-cell': streamHasDrops(s) }">{{ streamDropped(s) ?? '—' }}</td>
                 </template>
-                <!-- REST data columns -->
-                <template v-else>
-                  <td>{{ s.statusString || '—' }}</td>
-                  <td class="rs-error-cell">{{ s.status?.lastErrorMessage || '—' }}</td>
-                </template>
+                <!-- REST data column -->
+                <td v-else>{{ s.statusString || '—' }}</td>
+                <td class="rs-error-cell">{{ streamLastError(s) || '—' }}</td>
               </tr>
             </tbody>
           </table>
@@ -114,6 +126,8 @@ const layers = ref([])
 const layerStatuses = reactive({})
 // Live Update stream receive statuses (richer: has activeLatency, recentReceived, recentSent)
 const statusLists = reactive({})
+// Live Update per-node workload instances: load/health flags (isDroppingFrames, etc.)
+const instanceLists = reactive({})
 
 const loading = ref(true)
 const error = ref(null)
@@ -128,14 +142,23 @@ function subscribeReceiveStatuses(layerUid, workloadUid) {
   if (subscribedWorkloads.has(workloadUid)) return
   subscribedWorkloads.add(workloadUid)
 
-  const statusSub = liveUpdate.subscribe(
+  // One subscription, two properties: per-stream receive stats + per-node instances.
+  const sub = liveUpdate.subscribe(
     'subsystem:RenderStreamSystem',
-    { value: `object.getWorkloadReceiveStatuses(${workloadUid})` }
+    {
+      streams: `object.getWorkloadReceiveStatuses(${workloadUid})`,
+      instances: `object.getWorkloadInstances(${workloadUid})`
+    }
   )
 
-  watch(statusSub.value, (val) => {
+  watch(sub.streams, (val) => {
     const arr = coerceArray(val)
     if (arr.length > 0) statusLists[layerUid] = arr
+  }, { deep: true })
+
+  watch(sub.instances, (val) => {
+    // Instances can legitimately go empty (workload stopped), so always reflect it.
+    instanceLists[layerUid] = coerceArray(val)
   }, { deep: true })
 }
 
@@ -224,7 +247,46 @@ function coerceArray(val) {
 }
 
 function getInstances(layerUid) {
-  return layerStatuses[layerUid]?.workload?.instances ?? []
+  const rest = layerStatuses[layerUid]?.workload?.instances ?? []
+  const live = instanceLists[layerUid] ?? []
+  if (live.length === 0) return rest
+
+  const nameOf = (x) => x.machineName || x.machineUid
+  const liveByName = new Map(live.map((i) => [i.machineName, i]))
+
+  // REST rows carry state + health text; enrich each with the live load flags.
+  const merged = rest.map((r) => ({ ...r, live: liveByName.get(nameOf(r)) }))
+  // Include any live-only instances (running but not yet in the REST snapshot).
+  for (const li of live) {
+    if (!rest.some((r) => nameOf(r) === li.machineName)) {
+      merged.push({ machineName: li.machineName, state: '—', live: li })
+    }
+  }
+  return merged
+}
+
+function hasLiveInstances(layerUid) {
+  return (instanceLists[layerUid]?.length ?? 0) > 0
+}
+
+// Per-node load/health flags surfaced as small chips. Order = severity.
+function instanceFlags(inst) {
+  const live = inst.live
+  if (!live) return []
+  const flags = []
+  if (live.unrecoverableError) flags.push({ label: 'Error', cls: 'rs-badge-error' })
+  if (live.isProcessRunning === false) flags.push({ label: 'Not running', cls: 'rs-badge-error' })
+  if (live.isDroppingFrames) flags.push({ label: 'Dropping frames', cls: 'rs-badge-warn' })
+  if (live.isDroppingInputFrames) flags.push({ label: 'Dropping input', cls: 'rs-badge-warn' })
+  if (live.isHighActiveLatencyDetected) flags.push({ label: 'High latency', cls: 'rs-badge-warn' })
+  if (live.isStopping) flags.push({ label: 'Stopping', cls: '' })
+  if (flags.length === 0 && live.isProcessRunning) flags.push({ label: 'OK', cls: 'rs-badge-ok' })
+  return flags
+}
+
+function instanceHasLoadIssue(inst) {
+  const l = inst.live
+  return !!l && (l.unrecoverableError || l.isProcessRunning === false || l.isDroppingFrames || l.isDroppingInputFrames || l.isHighActiveLatencyDetected)
 }
 
 function getStreams(layerUid) {
@@ -257,9 +319,24 @@ function instanceBadgeClass(inst) {
 }
 
 function instanceRowClass(inst) {
-  if (isErrorState(inst) || inst.healthDetails) return 'rs-error-row'
-  if (inst.healthMessage) return 'rs-warn-row'
+  const l = inst.live
+  if (isErrorState(inst) || inst.healthDetails || l?.unrecoverableError || l?.isProcessRunning === false) return 'rs-error-row'
+  if (inst.healthMessage || instanceHasLoadIssue(inst)) return 'rs-warn-row'
   return ''
+}
+
+// ── Stream reliability (from SubscribedStreamStatus) ───────────────────────────
+function streamDropped(s) {
+  return typeof s.totalDroppedPackets === 'number' ? s.totalDroppedPackets : null
+}
+
+function streamHasDrops(s) {
+  return typeof s.totalDroppedPackets === 'number' && s.totalDroppedPackets > 0
+}
+
+function streamLastError(s) {
+  // Live Update streams expose tLastErrorMessage; REST streams nest under status.
+  return s.tLastErrorMessage || s.status?.lastErrorMessage || ''
 }
 
 // Works for both REST stream objects and Live Update SubscribedStreamStatus objects
@@ -279,7 +356,7 @@ function streamRoute(s, layerUid) {
 function streamRowClass(s, layerUid) {
   const subscribed = s.subscribeSuccessful ?? s.status?.subscribeSuccessful
   if (subscribed === false) return 'rs-warn-row'
-  if (hasLiveUpdateStreams(layerUid) && isHighLatency(s)) return 'rs-warn-row'
+  if (hasLiveUpdateStreams(layerUid) && (isHighLatency(s) || streamHasDrops(s))) return 'rs-warn-row'
   return ''
 }
 
@@ -382,6 +459,13 @@ function isHighLatency(s) {
   font-weight: 600;
   background: #333;
   color: #888;
+}
+
+.rs-flags-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
 }
 
 .rs-badge-ok {

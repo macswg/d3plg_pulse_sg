@@ -58,6 +58,26 @@ From the **monitoring machine**, open the plugin in a browser. It connects to th
 http://localhost:5173?director=192.168.1.100:80
 ```
 
+### Local Designer (same machine as dev server)
+
+When Designer runs on the same machine as the dev server (e.g. `localhost` or `127.0.0.1`), the app uses a Vite proxy to avoid CORS.
+
+**Recommended for local Designer:** Run the dev server on the host (not in Docker) so the proxy can reach Designer without Docker networking issues:
+```sh
+npm install && npm run dev
+```
+Then open http://localhost:5173. Set `VITE_DIRECTOR=localhost:80` or use `?director=localhost:80`.
+
+**With Docker:** Run the host-side proxy so the container can reach Designer (Designer often binds to 127.0.0.1 only):
+
+1. On the host, in a separate terminal: `npm run designer-proxy` (listens on 18080, forwards to localhost:80)
+2. Set `VITE_DIRECTOR=localhost:80` and `VITE_PROXY_TARGET=http://host.docker.internal:18080` in docker-compose
+3. Start the dev container: `docker compose up`
+
+The container proxies to host.docker.internal:18080; the host-side proxy forwards to 127.0.0.1:80.
+
+**If you previously connected to a remote director:** Open Settings → "Reset to defaults" so the app uses localhost. Saved config in localStorage overrides the env default.
+
 ## Project Structure
 
 ```

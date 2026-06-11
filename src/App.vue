@@ -22,9 +22,14 @@
       </nav>
       
       <div class="sidebar-footer">
-        <div class="connection-status" :class="{ connected: isConnected }">
-          <span class="status-dot"></span>
-          <span v-if="!sidebarCollapsed">{{ isConnected ? 'Connected' : 'Disconnected' }}</span>
+        <div class="footer-info">
+          <div class="connection-status" :class="{ connected: isConnected }">
+            <span class="status-dot"></span>
+            <span v-if="!sidebarCollapsed">{{ isConnected ? 'Connected' : 'Disconnected' }}</span>
+          </div>
+          <span v-if="!sidebarCollapsed" class="app-version" :title="`Pulse SG v${appVersion}${gitCommit ? ' · ' + gitCommit : ''}`">
+            v{{ appVersion }}<span v-if="gitCommit" class="version-commit"> · {{ gitCommit }}</span>
+          </span>
         </div>
         <button class="collapse-btn" @click="sidebarCollapsed = !sidebarCollapsed">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -159,7 +164,7 @@
           </div>
           <div class="settings-field">
             <label for="update-rate">Update rate (ms)</label>
-            <input id="update-rate" v-model.number="config.updateRateMs" type="number" min="0" max="5000" placeholder="10" />
+            <input id="update-rate" v-model.number="config.updateRateMs" type="number" min="0" max="5000" placeholder="250" />
             <span class="settings-hint">0 = no throttling; 1–5000 = min interval (ms) between updates</span>
           </div>
           <div class="settings-actions">
@@ -173,16 +178,6 @@
 
     <!-- Connection Overlay -->
     <LiveUpdateOverlay :liveUpdate="liveUpdate" />
-
-    <!-- Per-machine Live Update connections for remote machines (actors/understudies). Director uses the single connection above. -->
-    <MachineLiveUpdate
-      v-for="id in remoteMachineIds"
-      :key="id"
-      :machine-id="id"
-      :machine="machines[id]"
-      :director-endpoint="directorEndpoint"
-      :update-rate-ms="config.updateRateMs > 0 ? config.updateRateMs : 500"
-    />
   </div>
 </template>
 
@@ -191,13 +186,19 @@ import { ref, computed, watch, onMounted, onUnmounted, reactive } from 'vue'
 import { useLiveUpdate, LiveUpdateOverlay } from '@disguise-one/vue-liveupdate'
 import MetricCard from './components/MetricCard.vue'
 import AlertManager from './components/AlertManager.vue'
-import MachineLiveUpdate from './components/MachineLiveUpdate.vue'
 import RenderStreamStatus from './components/RenderStreamStatus.vue'
 import { useMetricsStore } from './stores/metrics'
 
 // API config: load from localStorage or derive from URL/env
 const urlParams = new URLSearchParams(window.location.search)
 const { hostname, protocol } = window.location
+
+// Default UI update rate. This throttles how often metrics are pushed into the
+// store (history + alert evaluation); the health monitors in d3 poll at ~1s, so
+// a sub-second UI rate is plenty smooth without thrashing sparklines.
+const DEFAULT_UPDATE_RATE_MS = 250
+// How often we re-fetch the session machine list to detect actors joining/leaving.
+const SESSION_REFRESH_MS = 10000
 
 function getDefaultEndpoint() {
   let ep = urlParams.get('director') || null
@@ -220,19 +221,37 @@ function loadConfig() {
     const parsed = raw ? JSON.parse(raw) : null
     const apiHost = (parsed?.apiHost ?? defaultHost).toString().trim() || defaultHost
     const apiPort = Math.min(65535, Math.max(1, Number(parsed?.apiPort) || Number(defaultPort) || 80))
-    const updateRateMs = Math.min(5000, Math.max(0, Number(parsed?.updateRateMs) ?? 10))
+    const rawRate = Number(parsed?.updateRateMs)
+    const updateRateMs = Math.min(5000, Math.max(0, Number.isFinite(rawRate) ? rawRate : DEFAULT_UPDATE_RATE_MS))
     return { apiHost, apiPort, updateRateMs }
   } catch {
-    return { apiHost: defaultHost, apiPort: Number(defaultPort) || 80, updateRateMs: 10 }
+    return { apiHost: defaultHost, apiPort: Number(defaultPort) || 80, updateRateMs: DEFAULT_UPDATE_RATE_MS }
   }
 }
 
 const config = reactive(loadConfig())
-const directorEndpoint = computed(() => `${config.apiHost}:${config.apiPort}`)
-const apiBaseUrl = computed(() => `http://${config.apiHost}:${config.apiPort}`)
 
-// Live Update uses config endpoint (refresh page after changing host/port to apply)
-const liveUpdate = useLiveUpdate(`${config.apiHost}:${config.apiPort}`)
+// When director is localhost in dev mode, route via Vite proxy to avoid CORS (local Designer)
+function getEffectiveEndpoint() {
+  const host = config.apiHost
+  const port = config.apiPort
+  const isLocal = host === 'localhost' || host === '127.0.0.1'
+  if (isLocal && import.meta.env.DEV) return window.location.host
+  return `${host}:${port}`
+}
+const useProxyForLocal = computed(() => {
+  const host = config.apiHost
+  return (host === 'localhost' || host === '127.0.0.1') && import.meta.env.DEV
+})
+const directorEndpoint = computed(() =>
+  useProxyForLocal.value ? window.location.host : `${config.apiHost}:${config.apiPort}`
+)
+const apiBaseUrl = computed(() =>
+  useProxyForLocal.value ? '' : `http://${config.apiHost}:${config.apiPort}`
+)
+
+// Live Update uses effective endpoint (refresh page after changing host/port to apply)
+const liveUpdate = useLiveUpdate(getEffectiveEndpoint())
 
 // Initialize metrics store
 const store = useMetricsStore()
@@ -242,15 +261,18 @@ const activeTab = ref('overview')
 const sidebarCollapsed = ref(false)
 const configSaved = ref(false)
 
+// Build version info (injected by Vite from package.json + git short hash)
+const appVersion = __APP_VERSION__
+const gitCommit = __GIT_COMMIT__
+
 function saveConfig() {
   const port = Math.min(65535, Math.max(1, Number(config.apiPort) || 80))
-  const updateRateMs = Math.min(5000, Math.max(0, Number(config.updateRateMs) ?? 10))
+  const rawRate = Number(config.updateRateMs)
+  const updateRateMs = Math.min(5000, Math.max(0, Number.isFinite(rawRate) ? rawRate : DEFAULT_UPDATE_RATE_MS))
   config.apiPort = port
   config.updateRateMs = updateRateMs
   localStorage.setItem('pulse_sg_api_config', JSON.stringify({ apiHost: config.apiHost, apiPort: config.apiPort, updateRateMs: config.updateRateMs }))
   store.setUpdateRate(config.updateRateMs)
-  stopIntervals()
-  startIntervals()
   configSaved.value = true
   setTimeout(() => { configSaved.value = false }, 3000)
 }
@@ -260,7 +282,7 @@ function resetConfig() {
   const [h, p] = defaultEp.includes(':') ? defaultEp.split(':') : [defaultEp, 80]
   config.apiHost = h
   config.apiPort = Number(p) || 80
-  config.updateRateMs = 10
+  config.updateRateMs = DEFAULT_UPDATE_RATE_MS
   configSaved.value = false
 }
 
@@ -296,139 +318,98 @@ const tabs = [
 // Computed properties from store (unwrap refs for template)
 const machineIds = computed(() => store.machineIds.value)
 const machines = computed(() => store.machines.value)
-const remoteMachineIds = computed(() => (store.machineIds.value || []).filter(id => store.machines.value[id] && !store.machines.value[id].isLocal))
 const alertConfigs = computed(() => store.alertConfigs.value)
 const alertCount = computed(() => store.alertCount.value)
 const isConnected = computed(() => store.isConnected.value)
 
-// Per-machine subscription refs (Overview: fps, cpu, gpu, memory; Advanced: diskRead, diskWrite)
-const overviewSubscriptions = reactive({})
-const advancedSubscriptions = reactive({})
+// ── Live Update subscriptions ───────────────────────────────────────────────
+// One WebSocket to the director (created above) serves every machine in the
+// session. The director already aggregates remote machines' monitors, so we
+// subscribe to all of them here instead of opening a socket per machine:
+//   - director (local):  findLocalMonitor("<monitor>")
+//   - actors/understudies: findRemoteMonitor("<host>:d3", "<monitor>")
+// The library's subscription values are reactive computed refs, so a plain
+// watch pushes each change into the store — no polling required.
 
-// When machines are set, create Live Update subscriptions only for the director (local) machine.
-// Remote machines (actors/understudies) use MachineLiveUpdate: one WebSocket per machine with findLocalMonitor (like the working Pulse plugin).
-function objectPathLocal(monitorName) {
-  return `subsystem:MonitoringManager.findLocalMonitor("${monitorName}")`
+// All metrics for one machine, grouped by monitor object so each object path is
+// a single subscription carrying multiple series.
+const MONITORS = [
+  { monitor: 'Machine', paths: { cpuLoad: 'object.seriesAverage("CPU Time", 1)', gpuLoad: 'object.seriesAverage("GPU Time", 1)' } },
+  { monitor: 'fps', paths: { fps: 'object.seriesAverage("Actual", 1)' } },
+  { monitor: 'ProcessMemory', paths: { memoryUsage: 'object.seriesAverage("Usage (MB)", 1)', memoryMax: 'object.seriesAverage("Physical Memory (MB)", 1)' } },
+  { monitor: 'Disk', paths: { diskRead: 'object.seriesAverage("Read (MB/s)", 1)', diskWrite: 'object.seriesAverage("Write (MB/s)", 1)' } }
+]
+const METRIC_KEYS = ['cpuLoad', 'gpuLoad', 'fps', 'memoryUsage', 'diskRead', 'diskWrite']
+
+function monitorObjectPath(machine, monitorName) {
+  if (machine.isLocal) return `subsystem:MonitoringManager.findLocalMonitor("${monitorName}")`
+  // Remote node name is the machine's hostname suffixed with the d3 service tag.
+  const node = `${machine.hostname}:d3`
+  return `subsystem:MonitoringManager.findRemoteMonitor("${node}", "${monitorName}")`
 }
 
+// machineId -> { refs: { metricKey|memoryMax -> SubscriptionValue }, stops: [stopWatch] }
+const machineSubs = new Map()
+
+function subscribeMachine(machineId) {
+  const machine = store.machines.value[machineId]
+  if (!machine || machineSubs.has(machineId)) return
+
+  const refs = {}
+  for (const { monitor, paths } of MONITORS) {
+    Object.assign(refs, liveUpdate.subscribe(monitorObjectPath(machine, monitor), paths))
+  }
+
+  const toNumber = (v) => (typeof v === 'number' ? v : v?.value)
+  const stops = METRIC_KEYS.map((key) =>
+    watch(refs[key], (v) => {
+      const n = toNumber(v)
+      if (typeof n === 'number') store.updateMetric(machineId, key, n)
+    }, { immediate: true })
+  )
+  stops.push(watch(refs.memoryMax, (v) => {
+    const n = toNumber(v)
+    if (typeof n === 'number' && n > 0) store.setMemoryMax(machineId, n)
+  }, { immediate: true }))
+
+  machineSubs.set(machineId, { refs, stops })
+}
+
+function unsubscribeMachine(machineId) {
+  const entry = machineSubs.get(machineId)
+  if (!entry) return
+  entry.stops.forEach((stop) => stop())
+  // freeze() unsubscribes on the director side (releasing it of the work).
+  Object.values(entry.refs).forEach((r) => r?.freeze?.())
+  machineSubs.delete(machineId)
+}
+
+function setSubscriptionsActive(active) {
+  for (const { refs } of machineSubs.values()) {
+    Object.values(refs).forEach((r) => (active ? r?.thaw?.() : r?.freeze?.()))
+  }
+}
+
+// Add/remove subscriptions as machines join or leave the session.
 watch(
   () => store.machineIds.value,
   (ids) => {
-    const currentIds = new Set(ids || [])
-    // Clean up director subscriptions for machine IDs no longer in the list
-    const allSubKeys = new Set([
-      ...Object.keys(overviewSubscriptions),
-      ...Object.keys(advancedSubscriptions)
-    ])
-    for (const machineId of allSubKeys) {
-      if (currentIds.has(machineId)) continue
-      const ov = overviewSubscriptions[machineId]
-      if (ov) {
-        Object.values(ov).forEach((sub) => typeof sub?.unsubscribe === 'function' && sub.unsubscribe())
-        delete overviewSubscriptions[machineId]
-      }
-      const adv = advancedSubscriptions[machineId]
-      if (adv) {
-        Object.values(adv).forEach((sub) => typeof sub?.unsubscribe === 'function' && sub.unsubscribe())
-        delete advancedSubscriptions[machineId]
-      }
+    const current = new Set(ids || [])
+    for (const id of [...machineSubs.keys()]) {
+      if (!current.has(id)) unsubscribeMachine(id)
     }
-    if (!ids || ids.length === 0) return
-    for (const machineId of ids) {
-      if (overviewSubscriptions[machineId]) continue
-      const machine = store.machines.value[machineId]
-      if (!machine || !machine.isLocal) continue
-
-      overviewSubscriptions[machineId] = {
-        fps: liveUpdate.subscribe(objectPathLocal('fps'), { value: 'object.seriesAverage("Actual", 1)' }),
-        cpuLoad: liveUpdate.subscribe(objectPathLocal('Machine'), { value: 'object.seriesAverage("CPU Time", 1)' }),
-        gpuLoad: liveUpdate.subscribe(objectPathLocal('Machine'), { value: 'object.seriesAverage("GPU Time", 1)' }),
-        memoryUsage: liveUpdate.subscribe(objectPathLocal('ProcessMemory'), {
-          value: 'object.seriesAverage("Usage (MB)", 1)',
-          memoryMax: 'object.seriesAverage("Physical Memory (MB)", 1)'
-        })
-      }
-      advancedSubscriptions[machineId] = {
-        diskRead: liveUpdate.subscribe(objectPathLocal('Disk'), { value: 'object.seriesAverage("Read (MB/s)", 1)' }),
-        diskWrite: liveUpdate.subscribe(objectPathLocal('Disk'), { value: 'object.seriesAverage("Write (MB/s)", 1)' })
-      }
-
-      const ov = overviewSubscriptions[machineId]
-      const pushOv = (ref, key) => watch(() => ref?.value, (val) => {
-        const v = typeof val === 'number' ? val : val?.value
-        if (v != null) store.updateMetric(machineId, key, v)
-      }, { deep: true })
-      pushOv(ov.fps, 'fps')
-      pushOv(ov.cpuLoad, 'cpuLoad')
-      pushOv(ov.gpuLoad, 'gpuLoad')
-      pushOv(ov.memoryUsage, 'memoryUsage')
-      watch(ov.memoryUsage.memoryMax, (v) => {
-        const n = typeof v === 'number' ? v : v?.value
-        if (typeof n === 'number' && n > 0) store.setMemoryMax(machineId, n)
-      })
-      const adv = advancedSubscriptions[machineId]
-      pushOv(adv.diskRead, 'diskRead')
-      pushOv(adv.diskWrite, 'diskWrite')
-    }
+    if (document.visibilityState !== 'visible') return
+    for (const id of ids || []) subscribeMachine(id)
   },
   { immediate: true }
 )
 
-// Helper to freeze/thaw all subscriptions in an object
-function forEachSub(subs, action) {
-  Object.values(subs).forEach(sub => sub?.[action]?.())
-}
-
-// Freeze/thaw tab subscriptions: Overview (fps, cpu, gpu, mem); Advanced (disk only)
-watch(activeTab, (newTab, oldTab) => {
-  if (newTab === 'overview') {
-    Object.values(overviewSubscriptions).forEach(s => forEachSub(s, 'thaw'))
-  } else if (oldTab === 'overview') {
-    Object.values(overviewSubscriptions).forEach(s => forEachSub(s, 'freeze'))
-  }
-  if (newTab === 'advanced') {
-    Object.values(advancedSubscriptions).forEach(s => forEachSub(s, 'thaw'))
-  } else if (oldTab === 'advanced') {
-    Object.values(advancedSubscriptions).forEach(s => forEachSub(s, 'freeze'))
-  }
-}, { immediate: true })
-
-// Read subscription value (library may expose number or { value } ref)
-function readSubValue(raw) {
-  return typeof raw === 'number' ? raw : raw?.value
-}
-
-// Poll subscription refs and push to store (library refs may not be Vue-reactive when populated async)
-let metricsPollInterval = null
-function pollMetricRefs() {
-  const ids = store.machineIds.value
-  if (ids?.length) {
-    for (const machineId of ids) {
-      if (activeTab.value === 'overview') {
-        const ov = overviewSubscriptions[machineId]
-        if (ov) {
-          const fps = readSubValue(ov.fps?.value)
-          const cpu = readSubValue(ov.cpuLoad?.value)
-          const gpu = readSubValue(ov.gpuLoad?.value)
-          const mem = readSubValue(ov.memoryUsage?.value)
-          const memMax = readSubValue(ov.memoryUsage?.memoryMax)
-          if (typeof fps === 'number') store.updateMetric(machineId, 'fps', fps)
-          if (typeof cpu === 'number') store.updateMetric(machineId, 'cpuLoad', cpu)
-          if (typeof gpu === 'number') store.updateMetric(machineId, 'gpuLoad', gpu)
-          if (typeof mem === 'number') store.updateMetric(machineId, 'memoryUsage', mem)
-          if (typeof memMax === 'number' && memMax > 0) store.setMemoryMax(machineId, memMax)
-        }
-      }
-      if (activeTab.value !== 'advanced') continue
-      const adv = advancedSubscriptions[machineId]
-      if (!adv) continue
-      const dr = readSubValue(adv.diskRead?.value)
-      const dw = readSubValue(adv.diskWrite?.value)
-      if (typeof dr === 'number') store.updateMetric(machineId, 'diskRead', dr)
-      if (typeof dw === 'number') store.updateMetric(machineId, 'diskWrite', dw)
-    }
-  }
-}
+// Connection status is reported by Live Update itself — no REST health polling.
+watch(
+  () => liveUpdate.status.value,
+  (s) => store.setConnected(s === 'OPEN'),
+  { immediate: true }
+)
 
 // Fetch session to get director + actors (machine list)
 async function fetchSession() {
@@ -469,61 +450,37 @@ async function fetchSession() {
   }
 }
 
-// Fetch machine health (for connection status)
-async function fetchHealthMetrics() {
-  try {
-    const response = await fetch(`${apiBaseUrl.value}/api/session/status/health`)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    await response.json()
-    store.setConnected(true)
-  } catch (error) {
-    console.warn('Failed to fetch health metrics:', error.message)
-    store.setConnected(false)
-  }
-}
+// Slow REST poll, only to detect machines joining/leaving the session. All live
+// metrics come over the Live Update WebSocket, not REST.
+let sessionRefreshTimer = null
 
-let healthPollInterval = null
-
-function getPollMs() {
-  return config.updateRateMs > 0 ? config.updateRateMs : 500
-}
-
-function startIntervals() {
-  if (healthPollInterval) return
-  const ms = getPollMs()
-  healthPollInterval = setInterval(fetchHealthMetrics, ms)
-  metricsPollInterval = setInterval(pollMetricRefs, ms)
-}
-
-function stopIntervals() {
-  if (healthPollInterval) {
-    clearInterval(healthPollInterval)
-    healthPollInterval = null
-  }
-  if (metricsPollInterval) {
-    clearInterval(metricsPollInterval)
-    metricsPollInterval = null
-  }
-}
-
+// When the page is hidden, freeze every subscription so an unwatched monitor
+// puts ~zero load on the Disguise servers; thaw (and re-subscribe) when visible.
 function onVisibilityChange() {
-  if (document.visibilityState === 'visible') startIntervals()
-  else stopIntervals()
+  if (document.visibilityState === 'visible') {
+    for (const id of store.machineIds.value || []) subscribeMachine(id)
+    setSubscriptionsActive(true)
+    fetchSession()
+  } else {
+    setSubscriptionsActive(false)
+  }
 }
 
 onMounted(() => {
   store.setUpdateRate(config.updateRateMs)
   liveUpdate.reconnect()
   fetchSession()
-  fetchHealthMetrics()
-  startIntervals()
+  sessionRefreshTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') fetchSession()
+  }, SESSION_REFRESH_MS)
   document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 // Cleanup on unmount
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
-  stopIntervals()
+  if (sessionRefreshTimer) clearInterval(sessionRefreshTimer)
+  for (const id of [...machineSubs.keys()]) unsubscribeMachine(id)
 })
 
 // Actions
@@ -673,12 +630,30 @@ body {
   justify-content: space-between;
 }
 
+.footer-info {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
 .connection-status {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
   color: #888;
+}
+
+.app-version {
+  font-size: 11px;
+  color: #555;
+  white-space: nowrap;
+  padding-left: 16px;
+}
+
+.version-commit {
+  color: #444;
 }
 
 .status-dot {
